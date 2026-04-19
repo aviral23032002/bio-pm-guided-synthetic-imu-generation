@@ -1,0 +1,282 @@
+Run command -> python preprocess_wisdm.py
+
+Output
+
+1. Loading and Cleaning Data...
+Total raw samples loaded: 1086465
+
+2. Class Balance Audit...
+Class Distribution:
+ - Walking: 38.51%
+ - Jogging: 30.97%
+ - Upstairs: 11.31%
+ - Downstairs: 9.24%
+ - Sitting: 5.52%
+ - Standing: 4.45%
+
+[FLAG] Minority classes (<10%): ['Downstairs', 'Sitting', 'Standing']
+Saved distribution plot to 'class_distribution.png'
+
+3. Building Windowing Pipeline...
+Final Tensor Shape: (10591, 200, 3)
+Total extracted windows: 10591
+
+4. Saving to HDF5...
+Success! Data saved to 'wisdm_windows.hdf5' ready for Bio-PM.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Run command -> python week1_analysis.py \
+    --data_dir  preprocessed_biopm_test \
+    --checkpoint CS690TR/checkpoints/checkpoint.pt \
+    --features  features/biopm_features.npz \
+    --out_dir   results_week1_test
+
+Output
+
+============================================================
+CAR-IMU  Week 1 Analysis
+============================================================
+  data_dir:   preprocessed_biopm_test
+  features:   features/biopm_features.npz
+  out_dir:    results_week1_test
+
+════════════════════════════════════════════════════════════
+STEP 1 — Token Extraction
+════════════════════════════════════════════════════════════
+  Loaded 293 windows | ME patches (293, 192, 32) | Gravity (293, 300, 3)
+token_extract set: 293 samples
+Loaded encoder_acc weights from CS690TR/checkpoints/checkpoint.pt
+  unexpected keys: ['decoder_cnn.decode_cnn.0.weight', 'decoder_cnn.decode_cnn.1.weight', 'decoder_cnn.decode_cnn.1.bias', 'decoder_cnn.decode_cnn.1.running_mean', 'decoder_cnn.decode_cnn.1.running_var', 'decoder_cnn.decode_cnn.1.num_batches_tracked', 'decoder_cnn.decode_cnn.3.weight', 'decoder_cnn.decode_cnn.4.weight', 'decoder_cnn.decode_cnn.4.bias', 'decoder_cnn.decode_cnn.4.running_mean', 'decoder_cnn.decode_cnn.4.running_var', 'decoder_cnn.decode_cnn.4.num_batches_tracked', 'decoder_cnn.decode_cnn.6.weight', 'decoder_cnn.decode_cnn.7.weight', 'decoder_cnn.decode_cnn.7.bias', 'decoder_cnn.decode_cnn.7.running_mean', 'decoder_cnn.decode_cnn.7.running_var', 'decoder_cnn.decode_cnn.7.num_batches_tracked', 'decoder_cnn.decode_cnn.9.weight', 'decoder_cnn.decode_cnn.10.weight', 'decoder_cnn.decode_cnn.10.bias', 'decoder_cnn.decode_cnn.10.running_mean', 'decoder_cnn.decode_cnn.10.running_var', 'decoder_cnn.decode_cnn.10.num_batches_tracked', 'decoder_cnn.decode_cnn.12.weight', 'decoder_cnn.decode_cnn.12.bias']
+  Saved token store: results_week1_test/token_store.hdf5
+    tokens:      (293, 192, 64)   (N × L × D)
+    mean_tokens: (293, 64)     (N × D)
+
+════════════════════════════════════════════════════════════
+STEP 2 — Nearest-Neighbour Sanity Check
+════════════════════════════════════════════════════════════
+  Window   24 [Sitting     ]  NN labels: ['Sitting', 'Sitting', 'Sitting', 'Sitting', 'Sitting']  → 100% same class
+  Window  220 [Walking     ]  NN labels: ['Upstairs', 'Downstairs', 'Walking', 'Walking', 'Upstairs']  → 40% same class
+  Window   25 [Sitting     ]  NN labels: ['Standing', 'Sitting', 'Sitting', 'Standing', 'Sitting']  → 60% same class
+  Window  187 [Walking     ]  NN labels: ['Walking', 'Walking', 'Walking', 'Walking', 'Walking']  → 100% same class
+  Window  125 [Walking     ]  NN labels: ['Walking', 'Walking', 'Walking', 'Walking', 'Walking']  → 100% same class
+  Window  124 [Walking     ]  NN labels: ['Walking', 'Walking', 'Walking', 'Walking', 'Walking']  → 100% same class
+  Window  202 [Walking     ]  NN labels: ['Walking', 'Walking', 'Walking', 'Walking', 'Walking']  → 100% same class
+  Window   27 [Sitting     ]  NN labels: ['Sitting', 'Sitting', 'Standing', 'Standing', 'Standing']  → 40% same class
+  Window   58 [Downstairs  ]  NN labels: ['Downstairs', 'Downstairs', 'Downstairs', 'Downstairs', 'Downstairs']  → 100% same class
+  Window  248 [Upstairs    ]  NN labels: ['Downstairs', 'Upstairs', 'Upstairs', 'Upstairs', 'Upstairs']  → 80% same class
+
+  Mean same-class fraction across 10 probes: 82.0%
+  ✅ Good — tokens cluster by activity class. Bio-PM is useful!
+
+════════════════════════════════════════════════════════════
+STEP 3 — UMAP: Token Space coloured by Activity
+════════════════════════════════════════════════════════════
+  umap-learn not installed. Run: pip install umap-learn
+  Skipping UMAP plot.
+
+════════════════════════════════════════════════════════════
+STEP 4 — Subject-Style Embeddings
+════════════════════════════════════════════════════════════
+     Subject    Windows       Norm
+  -----------------------------------
+          33        293     6.1404
+
+  Saved: results_week1_test/subject_embeddings.npy  shape=(1, 64)
+  Saved: results_week1_test/subject_embedding_ids.npy
+
+════════════════════════════════════════════════════════════
+STEP 5 — UMAP: Subject-Style Embedding Space
+════════════════════════════════════════════════════════════
+  Too few subjects for UMAP — skipping (need ≥4).
+
+════════════════════════════════════════════════════════════
+STEP 6 — Baseline HAR Classifier (real-only, LOSO)
+════════════════════════════════════════════════════════════
+  Loaded: 293 windows, 1028-d features
+  Subjects: [33]
+  Classes:  [0, 1, 2, 3, 4, 5]
+
+  Class distribution (windows):
+    Walking            149 windows
+    Jogging             28 windows
+    Upstairs            23 windows
+    Downstairs          45 windows
+    Sitting             32 windows
+    Standing            16 windows
+
+  Only 1 subject found — running train/test split (80/20) instead of LOSO
+  (Re-run after processing all subjects for proper LOSO)
+
+  ┌─────────────────────────────────────┐
+  │  BASELINE RESULTS (80/20 split)     │
+  │  Linear probe Macro-F1: 0.825        │
+  │  MLP        Macro-F1: 0.783        │
+  └─────────────────────────────────────┘
+
+  Per-class report (MLP):
+              precision    recall  f1-score   support
+
+     Walking       1.00      0.97      0.98        30
+     Jogging       0.86      1.00      0.92         6
+    Upstairs       0.40      0.40      0.40         5
+  Downstairs       0.67      0.67      0.67         9
+     Sitting       0.86      1.00      0.92         6
+    Standing       1.00      0.67      0.80         3
+
+    accuracy                           0.86        59
+   macro avg       0.80      0.78      0.78        59
+weighted avg       0.87      0.86      0.86        59
+
+
+  Saved: results_week1_test/baseline_results.npy
+
+════════════════════════════════════════════════════════════
+✅  Week 1 analysis complete!
+   All outputs in: results_week1_test/
+   token_store.hdf5         ← full Z matrices for CAR-IMU training
+   subject_embeddings.npy   ← subject conditioning vectors
+   umap_activity.png        ← sanity check plot
+   umap_subjects.png        ← subject separation plot
+   baseline_results.npy     ← real-only F1 to beat
+════════════════════════════════════════════════════════════
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+Run command -> python week1_analysis.py \
+    --data_dir  preprocessed_biopm_test \
+    --checkpoint CS690TR/checkpoints/checkpoint.pt \
+    --features  features/biopm_features.npz \
+    --out_dir   results_week1_test \
+    --skip_tokens
+
+Output
+
+============================================================
+CAR-IMU  Week 1 Analysis
+============================================================
+  data_dir:   preprocessed_biopm_test
+  features:   features/biopm_features.npz
+  out_dir:    results_week1_test
+
+Loading existing token store from results_week1_test/token_store.hdf5 ...
+
+════════════════════════════════════════════════════════════
+STEP 2 — Nearest-Neighbour Sanity Check
+════════════════════════════════════════════════════════════
+  Window   24 [Sitting     ]  NN labels: ['Sitting', 'Sitting', 'Sitting', 'Sitting', 'Sitting']  → 100% same class
+  Window  220 [Walking     ]  NN labels: ['Upstairs', 'Downstairs', 'Walking', 'Walking', 'Upstairs']  → 40% same class
+  Window   25 [Sitting     ]  NN labels: ['Standing', 'Sitting', 'Sitting', 'Standing', 'Sitting']  → 60% same class
+  Window  187 [Walking     ]  NN labels: ['Walking', 'Walking', 'Walking', 'Walking', 'Walking']  → 100% same class
+  Window  125 [Walking     ]  NN labels: ['Walking', 'Walking', 'Walking', 'Walking', 'Walking']  → 100% same class
+  Window  124 [Walking     ]  NN labels: ['Walking', 'Walking', 'Walking', 'Walking', 'Walking']  → 100% same class
+  Window  202 [Walking     ]  NN labels: ['Walking', 'Walking', 'Walking', 'Walking', 'Walking']  → 100% same class
+  Window   27 [Sitting     ]  NN labels: ['Sitting', 'Sitting', 'Standing', 'Standing', 'Standing']  → 40% same class
+  Window   58 [Downstairs  ]  NN labels: ['Downstairs', 'Downstairs', 'Downstairs', 'Downstairs', 'Downstairs']  → 100% same class
+  Window  248 [Upstairs    ]  NN labels: ['Downstairs', 'Upstairs', 'Upstairs', 'Upstairs', 'Upstairs']  → 80% same class
+
+  Mean same-class fraction across 10 probes: 82.0%
+  ✅ Good — tokens cluster by activity class. Bio-PM is useful!
+
+════════════════════════════════════════════════════════════
+STEP 3 — UMAP: Token Space coloured by Activity
+════════════════════════════════════════════════════════════
+  Fitting UMAP (n_neighbors=15, min_dist=0.1) ...
+  Saved: results_week1_test/umap_activity.png
+
+════════════════════════════════════════════════════════════
+STEP 4 — Subject-Style Embeddings
+════════════════════════════════════════════════════════════
+     Subject    Windows       Norm
+  -----------------------------------
+          33        293     6.1404
+
+  Saved: results_week1_test/subject_embeddings.npy  shape=(1, 64)
+  Saved: results_week1_test/subject_embedding_ids.npy
+
+════════════════════════════════════════════════════════════
+STEP 5 — UMAP: Subject-Style Embedding Space
+════════════════════════════════════════════════════════════
+  Too few subjects for UMAP — skipping (need ≥4).
+
+════════════════════════════════════════════════════════════
+STEP 6 — Baseline HAR Classifier (real-only, LOSO)
+════════════════════════════════════════════════════════════
+  Loaded: 293 windows, 1028-d features
+  Subjects: [33]
+  Classes:  [0, 1, 2, 3, 4, 5]
+
+  Class distribution (windows):
+    Walking            149 windows
+    Jogging             28 windows
+    Upstairs            23 windows
+    Downstairs          45 windows
+    Sitting             32 windows
+    Standing            16 windows
+
+  Only 1 subject found — running train/test split (80/20) instead of LOSO
+  (Re-run after processing all subjects for proper LOSO)
+
+  ┌─────────────────────────────────────┐
+  │  BASELINE RESULTS (80/20 split)     │
+  │  Linear probe Macro-F1: 0.825        │
+  │  MLP        Macro-F1: 0.783        │
+  └─────────────────────────────────────┘
+
+  Per-class report (MLP):
+              precision    recall  f1-score   support
+
+     Walking       1.00      0.97      0.98        30
+     Jogging       0.86      1.00      0.92         6
+    Upstairs       0.40      0.40      0.40         5
+  Downstairs       0.67      0.67      0.67         9
+     Sitting       0.86      1.00      0.92         6
+    Standing       1.00      0.67      0.80         3
+
+    accuracy                           0.86        59
+   macro avg       0.80      0.78      0.78        59
+weighted avg       0.87      0.86      0.86        59
+
+
+  Saved: results_week1_test/baseline_results.npy
+
+════════════════════════════════════════════════════════════
+✅  Week 1 analysis complete!
+   All outputs in: results_week1_test/
+   token_store.hdf5         ← full Z matrices for CAR-IMU training
+   subject_embeddings.npy   ← subject conditioning vectors
+   umap_activity.png        ← sanity check plot
+   umap_subjects.png        ← subject separation plot
+   baseline_results.npy     ← real-only F1 to beat
+════════════════════════════════════════════════════════════

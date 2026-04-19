@@ -1,0 +1,541 @@
+
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font-sans)}
+.wrap{padding:1rem 0}
+nav{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:1.25rem;border-bottom:0.5px solid var(--color-border-tertiary);padding-bottom:12px}
+.tab{padding:6px 13px;font-size:12px;border:0.5px solid var(--color-border-secondary);border-radius:var(--border-radius-md);cursor:pointer;background:transparent;color:var(--color-text-secondary);transition:all .15s}
+.tab.active{background:var(--color-background-secondary);color:var(--color-text-primary);border-color:var(--color-border-primary)}
+section{display:none}
+section.active{display:block}
+h2{font-size:16px;font-weight:500;color:var(--color-text-primary);margin-bottom:10px}
+h3{font-size:12px;font-weight:500;color:var(--color-text-secondary);text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px;margin-top:14px}
+p,li{font-size:13px;color:var(--color-text-secondary);line-height:1.65}
+ul{padding-left:16px;margin-bottom:8px}
+.card{background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-lg);padding:.85rem 1rem;margin-bottom:10px}
+.tag{display:inline-block;font-size:11px;padding:2px 7px;border-radius:4px;font-weight:500;margin-right:3px;margin-bottom:2px}
+.tp{background:#EEEDFE;color:#3C3489}
+.tg{background:#EAF3DE;color:#3B6D11}
+.ta{background:#FAEEDA;color:#854F0B}
+.tr{background:#FCEBEB;color:#A32D2D}
+.tb{background:#E6F1FB;color:#0C447C}
+.tgr{background:var(--color-background-secondary);color:var(--color-text-secondary)}
+strong{font-weight:500;color:var(--color-text-primary)}
+.note{font-size:12px;color:var(--color-text-tertiary);padding:7px 10px;border-radius:6px;background:var(--color-background-secondary);border-left:2px solid var(--color-border-secondary);margin-bottom:10px}
+
+.week-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}
+.day-card{border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-lg);padding:.8rem;background:var(--color-background-primary)}
+.day-label{font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:.05em;margin-bottom:8px}
+.task{display:flex;gap:8px;align-items:flex-start;margin-bottom:6px;padding:6px 8px;border-radius:6px}
+.task-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;margin-top:3px}
+.task-text{font-size:12px;color:var(--color-text-primary);line-height:1.5}
+.task-sub{font-size:11px;color:var(--color-text-secondary);margin-top:2px}
+.par-band{border-left:3px solid;border-radius:0;padding:6px 10px;margin-bottom:5px;border-radius:0 6px 6px 0}
+.par-label{font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:.06em;margin-bottom:3px}
+
+.pipe-flow{display:flex;align-items:center;flex-wrap:wrap;gap:4px;margin-bottom:12px}
+.pipe-box{border-radius:7px;padding:7px 12px;font-size:12px;font-weight:500;line-height:1.35;text-align:center}
+.arr{color:var(--color-text-tertiary);font-size:14px;padding:0 1px}
+
+.metric-item{display:flex;gap:10px;align-items:flex-start;padding:7px 10px;border-radius:7px;background:var(--color-background-secondary);margin-bottom:6px}
+.metric-icon{font-size:16px;width:24px;text-align:center;flex-shrink:0}
+.relwork-item{border-left:2px solid var(--color-border-secondary);padding:6px 10px;margin-bottom:7px;border-radius:0 6px 6px 0}
+.future-item{display:flex;gap:8px;align-items:flex-start;margin-bottom:8px;padding:8px 10px;border-radius:8px;border:0.5px solid var(--color-border-tertiary)}
+.fut-num{width:22px;height:22px;border-radius:50%;font-size:11px;font-weight:500;display:flex;align-items:center;justify-content:center;flex-shrink:0;margin-top:1px}
+.eq{font-family:var(--font-mono);font-size:11px;color:var(--color-text-secondary);background:var(--color-background-secondary);padding:2px 6px;border-radius:4px;display:inline-block;margin:4px 0}
+</style>
+
+<div class="wrap">
+<nav>
+  <button class="tab active" onclick="show('problem',this)">Problem statement</button>
+  <button class="tab" onclick="show('pipeline',this)">Proposed pipeline</button>
+  <button class="tab" onclick="show('prior',this)">Prior work</button>
+  <button class="tab" onclick="show('week1',this)">Week 1 tasks</button>
+  <button class="tab" onclick="show('week2',this)">Week 2 tasks</button>
+  <button class="tab" onclick="show('data',this)">Dataset</button>
+  <button class="tab" onclick="show('metrics',this)">Tasks & metrics</button>
+  <button class="tab" onclick="show('future',this)">Future extensions</button>
+</nav>
+
+<section id="problem" class="active">
+  <h2>Problem statement</h2>
+  <div class="card">
+    <h3>Core problem</h3>
+    <p>Human Activity Recognition (HAR) from IMU sensors suffers from a fundamental data scarcity problem. Collecting and labeling high-quality 6-axis IMU sequences is expensive, intrusive, and time-consuming — particularly for rare or clinically relevant activities (falls, rehabilitation exercises, gait disorders). This leads to severely imbalanced class distributions and poor generalization across subjects and deployment environments.</p>
+  </div>
+  <div class="card">
+    <h3>Research gap</h3>
+    <p>Existing data augmentation for IMU relies on hand-crafted signal transforms (jitter, rotation, time-warping) that lack semantic control. Recent deep generative models for time series (TimeGAN, SSSD) are trained from scratch on raw signals and cannot condition generation on both <strong>activity semantics</strong> and <strong>subject-style</strong> simultaneously. No prior work uses a pretrained biosignal foundation model as the representation scaffold for a conditional generator.</p>
+  </div>
+  <div class="card">
+    <h3>Proposed solution — CAR-IMU</h3>
+    <p>We propose the <strong>Class-conditional Autoregressive IMU model (CAR-IMU)</strong>. Rather than generating raw IMU waveforms, we operate entirely in the structured representation space of Bio-PM — a pretrained biosignal encoder. A lightweight transformer decoder learns to autoregressively predict the next Bio-PM token embedding conditioned on (1) an activity-class prefix token and (2) an optional subject-style embedding. Synthetic token sequences can be used directly for representation-space augmentation, or optionally decoded back to approximate raw IMU via a lightweight signal decoder.</p>
+    <div style="margin-top:8px">
+      <span class="tag tp">Novel angle</span>
+      <span class="tag tg">Low compute</span>
+      <span class="tag tb">Practical impact</span>
+    </div>
+  </div>
+  <div class="card">
+    <h3>Formal problem setup</h3>
+    <p>Let <span class="eq">X ∈ R^(T×6)</span> be a 10-second IMU window (T timesteps, 6 axes). Bio-PM encoder <span class="eq">E: X → Z ∈ R^(N×D)</span> maps it to N token embeddings of dimension D. Let <span class="eq">c ∈ C</span> be an activity class label and <span class="eq">s</span> be a subject-style embedding. We train an autoregressive model <span class="eq">p_θ(z_t | z_&lt;t, c, s)</span> and sample synthetic token sequences <span class="eq">Ẑ = {ẑ_1, ..., ẑ_N}</span>. Downstream HAR classifiers are then trained on real tokens ∪ synthetic tokens.</p>
+  </div>
+</section>
+
+<section id="pipeline">
+  <h2>Proposed pipeline — full system</h2>
+  <div class="note">Bio-PM encoder is frozen throughout. Only the autoregressive decoder and optional signal decoder are trained.</div>
+  <h3>Phase 1 — tokenization (offline, one-time)</h3>
+  <div class="pipe-flow">
+    <div class="pipe-box" style="background:#E6F1FB;color:#0C447C">Raw IMU<br><span style="font-size:10px;font-weight:400">X ∈ R^(T×6)</span></div>
+    <span class="arr">→</span>
+    <div class="pipe-box" style="background:#E6F1FB;color:#0C447C">10s window<br><span style="font-size:10px;font-weight:400">sliding, 50% overlap</span></div>
+    <span class="arr">→</span>
+    <div class="pipe-box" style="background:#EEEDFE;color:#3C3489">Bio-PM encoder E<br><span style="font-size:10px;font-weight:400">frozen pretrained</span></div>
+    <span class="arr">→</span>
+    <div class="pipe-box" style="background:#EEEDFE;color:#3C3489">Token matrix<br><span style="font-size:10px;font-weight:400">Z ∈ R^(N×D)</span></div>
+    <span class="arr">→</span>
+    <div class="pipe-box" style="background:#EAF3DE;color:#3B6D11">Stored tokens<br><span style="font-size:10px;font-weight:400">+ label (c, subj_id)</span></div>
+  </div>
+  <h3>Phase 2 — conditional generation (train)</h3>
+  <div class="pipe-flow">
+    <div class="pipe-box" style="background:#EAF3DE;color:#3B6D11">Class label c<br><span style="font-size:10px;font-weight:400">embedding lookup</span></div>
+    <span class="arr">+</span>
+    <div class="pipe-box" style="background:#EAF3DE;color:#3B6D11">Subject style s<br><span style="font-size:10px;font-weight:400">mean pool real tokens</span></div>
+    <span class="arr">→</span>
+    <div class="pipe-box" style="background:#FAEEDA;color:#854F0B">Prefix tokens<br><span style="font-size:10px;font-weight:400">[CLS_c] [SUBJ_s]</span></div>
+    <span class="arr">→</span>
+    <div class="pipe-box" style="background:#FAEEDA;color:#854F0B">CAR-IMU decoder<br><span style="font-size:10px;font-weight:400">causal transformer</span></div>
+    <span class="arr">→</span>
+    <div class="pipe-box" style="background:#FAEEDA;color:#854F0B">Next-token pred.<br><span style="font-size:10px;font-weight:400">MSE loss on Z</span></div>
+  </div>
+  <h3>Phase 3 — synthetic generation (inference)</h3>
+  <div class="pipe-flow">
+    <div class="pipe-box" style="background:#FAEEDA;color:#854F0B">Target class c*<br><span style="font-size:10px;font-weight:400">e.g. "walking"</span></div>
+    <span class="arr">→</span>
+    <div class="pipe-box" style="background:#FAEEDA;color:#854F0B">CAR-IMU sample<br><span style="font-size:10px;font-weight:400">autoregressive rollout</span></div>
+    <span class="arr">→</span>
+    <div class="pipe-box" style="background:#EEEDFE;color:#3C3489">Synthetic tokens Ẑ<br><span style="font-size:10px;font-weight:400">N×D embedding seq</span></div>
+    <span class="arr">→</span>
+    <div class="pipe-box" style="background:#EAF3DE;color:#3B6D11">Augmented pool<br><span style="font-size:10px;font-weight:400">real ∪ synthetic</span></div>
+  </div>
+  <h3>Phase 4 — downstream use</h3>
+  <div class="pipe-flow">
+    <div class="pipe-box" style="background:#EAF3DE;color:#3B6D11">Augmented token pool</div>
+    <span class="arr">→</span>
+    <div class="pipe-box" style="background:#EAF3DE;color:#3B6D11">HAR classifier<br><span style="font-size:10px;font-weight:400">linear probe or MLP</span></div>
+    <span class="arr">→</span>
+    <div class="pipe-box" style="background:#EAF3DE;color:#3B6D11">Accuracy / F1<br><span style="font-size:10px;font-weight:400">vs real-only baseline</span></div>
+  </div>
+  <div class="card" style="margin-top:4px">
+    <h3>Model architecture — CAR-IMU decoder</h3>
+    <p><strong>Input:</strong> sequence of token embeddings with positional encoding, prepended with a learned class-embedding token [CLS_c] and subject-style token [SUBJ_s] (mean-pooled from K=5 reference windows of that subject).</p>
+    <p style="margin-top:6px"><strong>Architecture:</strong> 4-layer causal transformer decoder. D_model = D (same as Bio-PM token dimension, typically 256–512). 4 attention heads. FFN dim = 2×D. Causal mask enforces autoregressive generation. Output projection: D_model → D (linear, no activation). Trained with MSE loss on the next token embedding.</p>
+    <p style="margin-top:6px"><strong>Parameter count:</strong> ~2–6M params depending on D — trainable on a single GPU in under 2 hours, or on CPU overnight with WISDM-scale data.</p>
+  </div>
+</section>
+
+<section id="prior">
+  <h2>Prior work — positioning CAR-IMU</h2>
+  <div class="note">Your contribution sits at the intersection of three threads. Cite all three and position CAR-IMU as their synthesis.</div>
+  <h3>Thread 1 — time-series generation</h3>
+  <div class="relwork-item">
+    <p><strong>TimeGAN</strong> (Yoon et al., NeurIPS 2019) — joint adversarial + supervised training of an embedding network. Limitation: trains embedding and generator together, no domain-pretrained encoder, GAN instability. CAR-IMU improvement: uses a frozen, domain-pretrained Bio-PM encoder — the representation space is far more structured before generation training even begins.</p>
+  </div>
+  <div class="relwork-item">
+    <p><strong>SSSD-S4</strong> (Alcaraz & Strodthoff, 2022) — diffusion model for time-series imputation using S4 backbone. Limitation: imputation, not generation; no class conditioning for HAR. CAR-IMU improvement: explicit class prefix conditioning, autoregressive generation, smaller model.</p>
+  </div>
+  <div class="relwork-item">
+    <p><strong>TSGM</strong> (Nikitin et al., 2023) — general benchmark framework for TS synthetic data. Limitation: generic statistical representations, no biosignal-specific inductive biases. CAR-IMU improvement: Bio-PM encoder provides domain-aligned, activity-discriminative representations as the generation substrate.</p>
+  </div>
+  <h3>Thread 2 — self-supervised learning on IMU</h3>
+  <div class="relwork-item">
+    <p><strong>LIMU-BERT</strong> (Xu et al., IPSN 2021) — BERT-style masked pretraining on raw IMU for downstream HAR. Most related: similar encoder design to Bio-PM. CAR-IMU improvement: we go beyond classification and use the learned space for conditional generation, a capability LIMU-BERT does not address.</p>
+  </div>
+  <div class="relwork-item">
+    <p><strong>CPC / TNC on IMU</strong> (Oord et al.; Tonekaboni et al.) — contrastive SSL for temporal segments. CAR-IMU improvement: we use the contrastive representation space as a generative prior — a direction neither paper explores.</p>
+  </div>
+  <div class="relwork-item">
+    <p><strong>Bio-PM</strong> (your anchor work) — pretrained biosignal encoder producing token-level representations. CAR-IMU treats this as a frozen semantic oracle and places a trainable generator on top. Explicitly frame this as "generation in the Bio-PM latent space."</p>
+  </div>
+  <h3>Thread 3 — HAR augmentation</h3>
+  <div class="relwork-item">
+    <p><strong>Um et al. (2017)</strong> — seminal survey of hand-crafted IMU transforms: jitter, scaling, rotation, permutation. Limitation: no learned semantics, no class-targeted control. CAR-IMU improvement: class-conditional generation produces semantically coherent synthetic samples, not arbitrary transforms.</p>
+  </div>
+  <div class="relwork-item">
+    <p><strong>SensGen / ActSynth</strong> — GAN-based IMU generation for HAR augmentation. Limitation: GAN training instability, no explicit class conditioning through a prefix mechanism, no compatibility with pretrained encoders. CAR-IMU improvement: stable autoregressive training, explicit class prefix, synthetic tokens are by construction in Bio-PM representation space.</p>
+  </div>
+  <div class="relwork-item">
+    <p><strong>SMOTE variants for HAR</strong> — interpolation in feature space for minority class augmentation. Limitation: linear interpolation, no temporal structure, operates on handcrafted features. CAR-IMU improvement: learned generation captures temporal dynamics and activity-specific motion patterns.</p>
+  </div>
+  <h3>Your positioning sentence</h3>
+  <div class="card" style="border-left:2px solid #7F77DD;border-radius:0 var(--border-radius-lg) var(--border-radius-lg) 0">
+    <p>"CAR-IMU is the first method to place a class-conditional autoregressive generator in the token representation space of a pretrained biosignal foundation model, enabling semantically controlled IMU synthesis without adversarial training or raw-signal generation."</p>
+  </div>
+</section>
+
+<section id="week1">
+  <h2>Week 1 — setup, tokenization, baseline model</h2>
+  <div class="note">Tasks in the same color band can be done in parallel by different team members.</div>
+
+  <h3>Days 1–2 · parallel block A + B</h3>
+  <div class="week-grid">
+    <div class="day-card">
+      <div class="day-label" style="color:#0C447C">Block A — data & environment (person B)</div>
+      <div class="task" style="background:#E6F1FB">
+        <div class="task-dot" style="background:#378ADD"></div>
+        <div><div class="task-text">Download & inspect WISDM v1 + v2</div><div class="task-sub">Verify axes, sampling rate (20Hz), label distribution across 6 activities. Load into pandas. Plot per-class sample counts.</div></div>
+      </div>
+      <div class="task" style="background:#E6F1FB">
+        <div class="task-dot" style="background:#378ADD"></div>
+        <div><div class="task-text">Build windowing pipeline</div><div class="task-sub">10s windows = 200 samples at 20Hz. 50% overlap. Output: (N_windows, 200, 6) tensor + label array + subject_id array. Save to disk as .npy or HDF5.</div></div>
+      </div>
+      <div class="task" style="background:#E6F1FB">
+        <div class="task-dot" style="background:#378ADD"></div>
+        <div><div class="task-text">Class balance audit</div><div class="task-sub">Print class distribution table. Flag minority classes (&lt;10% of data). This determines which classes to oversample with synthetic data later.</div></div>
+      </div>
+    </div>
+    <div class="day-card">
+      <div class="day-label" style="color:#854F0B">Block B — environment & Bio-PM setup (person A)</div>
+      <div class="task" style="background:#FAEEDA">
+        <div class="task-dot" style="background:#EF9F27"></div>
+        <div><div class="task-text">Install Bio-PM & dependencies</div><div class="task-sub">Clone Bio-PM repo, install torch, numpy, einops. Verify GPU/CPU availability. Run Bio-PM's own test script to confirm encoder loads correctly.</div></div>
+      </div>
+      <div class="task" style="background:#FAEEDA">
+        <div class="task-dot" style="background:#EF9F27"></div>
+        <div><div class="task-text">Understand Bio-PM token format</div><div class="task-sub">Print shape of E(X) for a single window. Confirm N (num tokens), D (embedding dim). Check whether output is normalized. This determines CAR-IMU input/output dimensions.</div></div>
+      </div>
+      <div class="task" style="background:#FAEEDA">
+        <div class="task-dot" style="background:#EF9F27"></div>
+        <div><div class="task-text">Baseline classifier (person C — parallel)</div><div class="task-sub">Train a linear probe + MLP on Bio-PM embeddings (real data, no augmentation). Record macro F1 per class. This is your "real-only" baseline that all experiments must beat.</div></div>
+      </div>
+    </div>
+  </div>
+
+  <h3>Days 3–4 · tokenization + embedding store</h3>
+  <div class="week-grid">
+    <div class="day-card">
+      <div class="day-label" style="color:#3B6D11">Token extraction (person A + B together)</div>
+      <div class="task" style="background:#EAF3DE">
+        <div class="task-dot" style="background:#639922"></div>
+        <div><div class="task-text">Run Bio-PM encoder on all windows</div><div class="task-sub">Batch forward pass through frozen Bio-PM. Store full token matrix Z ∈ R^(N×D) per window. Save token_store.hdf5 with fields: tokens, label, subject_id, window_id.</div></div>
+      </div>
+      <div class="task" style="background:#EAF3DE">
+        <div class="task-dot" style="background:#639922"></div>
+        <div><div class="task-text">Nearest-neighbor sanity check</div><div class="task-sub">For 10 random windows, find 5 nearest neighbors by L2 distance in token space. Confirm same-class neighbors cluster together. Plot a UMAP of mean-pooled tokens colored by activity. This validates Bio-PM is useful for your data.</div></div>
+      </div>
+    </div>
+    <div class="day-card">
+      <div class="day-label" style="color:#854F0B">Subject-style embeddings (person A)</div>
+      <div class="task" style="background:#FAEEDA">
+        <div class="task-dot" style="background:#EF9F27"></div>
+        <div><div class="task-text">Compute subject-style vectors</div><div class="task-sub">For each subject, mean-pool their real token sequences across all activities to get a subject-style embedding s ∈ R^D. Store as subject_embeddings.npy. These serve as the conditioning signal SUBJ_s in the model.</div></div>
+      </div>
+      <div class="task" style="background:#FAEEDA">
+        <div class="task-dot" style="background:#EF9F27"></div>
+        <div><div class="task-text">UMAP: subject separation</div><div class="task-sub">Plot subject-style embeddings as UMAP. Check if subjects form distinct clusters. If yes — subject-style conditioning is meaningful and worth including in the paper. If no — default to activity-only conditioning (simpler).</div></div>
+      </div>
+    </div>
+  </div>
+
+  <h3>Day 5 · build CAR-IMU model skeleton</h3>
+  <div class="day-card" style="margin-bottom:10px">
+    <div class="day-label" style="color:#3C3489">Model code (person A, others can review)</div>
+    <div class="task" style="background:#EEEDFE">
+      <div class="task-dot" style="background:#7F77DD"></div>
+      <div><div class="task-text">Implement CausalTransformerDecoder class</div><div class="task-sub">4 layers, causal attention mask, positional encoding (sinusoidal or learned), output head D_model→D. ~100 lines of PyTorch.</div></div>
+    </div>
+    <div class="task" style="background:#EEEDFE">
+      <div class="task-dot" style="background:#7F77DD"></div>
+      <div><div class="task-text">Implement prefix token mechanism</div><div class="task-sub">Learnable class embedding table C ∈ R^(|C|×D) and subject projection W_s ∈ R^(D×D). Prepend [CLS_c] and [SUBJ_s] to each token sequence before feeding to decoder.</div></div>
+    </div>
+    <div class="task" style="background:#EEEDFE">
+      <div class="task-dot" style="background:#7F77DD"></div>
+      <div><div class="task-text">Implement training loop + MSE loss</div><div class="task-sub">Teacher forcing: input z_{1..N-1}, target z_{2..N}. MSE loss on all positions. AdamW optimizer, lr=1e-4. Gradient clipping at 1.0. Log loss every 100 steps.</div></div>
+    </div>
+    <div class="task" style="background:#EEEDFE">
+      <div class="task-dot" style="background:#7F77DD"></div>
+      <div><div class="task-text">Implement autoregressive sampling</div><div class="task-sub">Given prefix [CLS_c][SUBJ_s], sample z_1, z_2, ..., z_N one token at a time. Add Gaussian noise with temperature τ to each predicted embedding before feeding as next input. Implement both greedy (τ=0) and stochastic (τ>0) decoding.</div></div>
+    </div>
+  </div>
+
+  <h3>Day 5 (parallel) · eval harness setup</h3>
+  <div class="day-card">
+    <div class="day-label" style="color:#3B6D11">Evaluation framework (person B + C)</div>
+    <div class="task" style="background:#EAF3DE">
+      <div class="task-dot" style="background:#639922"></div>
+      <div><div class="task-text">Implement Bio-PM FID function</div><div class="task-sub">Compute mean/covariance of real token distributions per class. Compute FID between real and synthetic token sets using scipy. Write compute_fid(real_tokens, syn_tokens) → float.</div></div>
+    </div>
+    <div class="task" style="background:#EAF3DE">
+      <div class="task-dot" style="background:#639922"></div>
+      <div><div class="task-text">Implement MMD function</div><div class="task-sub">RBF kernel MMD between real and synthetic embedding distributions. Use median heuristic for bandwidth. Write compute_mmd(real, syn) → float.</div></div>
+    </div>
+    <div class="task" style="background:#EAF3DE">
+      <div class="task-dot" style="background:#639922"></div>
+      <div><div class="task-text">Augmented training harness</div><div class="task-sub">Function train_har_classifier(real_tokens, syn_tokens, syn_ratio) that mixes real and synthetic at a given ratio, trains a linear probe + small MLP, returns macro F1. Will be called with syn_ratio ∈ {0, 0.10, 0.25, 0.50}.</div></div>
+    </div>
+  </div>
+</section>
+
+<section id="week2">
+  <h2>Week 2 — train, generate, evaluate, write</h2>
+  <div class="note">Week 2 is heavily parallel. Generation and evaluation can start as soon as the first checkpoint is saved (day 8).</div>
+
+  <h3>Days 6–7 · train CAR-IMU v1 (activity-only)</h3>
+  <div class="week-grid">
+    <div class="day-card">
+      <div class="day-label" style="color:#3C3489">Training run (person A)</div>
+      <div class="task" style="background:#EEEDFE">
+        <div class="task-dot" style="background:#7F77DD"></div>
+        <div><div class="task-text">Train activity-only model (no subject style)</div><div class="task-sub">Use class label only as prefix. Train for 50 epochs on WISDM token store. Save checkpoint every 10 epochs. Monitor train loss curve — should decrease smoothly. Total expected train time: 1–3 hours on GPU, 10–12 hours on CPU.</div></div>
+      </div>
+      <div class="task" style="background:#EEEDFE">
+        <div class="task-dot" style="background:#7F77DD"></div>
+        <div><div class="task-text">Hyperparameter search (light)</div><div class="task-sub">Try 3 settings: lr ∈ {1e-3, 1e-4}, sampling temperature τ ∈ {0.5, 1.0}. Pick best val loss. Do not over-tune — this is not the main contribution.</div></div>
+      </div>
+    </div>
+    <div class="day-card">
+      <div class="day-label" style="color:#3B6D11">Quick generation test (person B — parallel)</div>
+      <div class="task" style="background:#EAF3DE">
+        <div class="task-dot" style="background:#639922"></div>
+        <div><div class="task-text">Generate 100 samples per class</div><div class="task-sub">Use epoch-10 checkpoint (partial training). Generate 100 token sequences per activity class. This is just a sanity check — do the tokens look reasonable in UMAP? Do they cluster near the right class?</div></div>
+      </div>
+      <div class="task" style="background:#EAF3DE">
+        <div class="task-dot" style="background:#639922"></div>
+        <div><div class="task-text">UMAP overlay: real vs synthetic</div><div class="task-sub">Plot real tokens (colored by class) + synthetic tokens (hollow markers, same colors). Synthetic should overlap real clusters. Take screenshot — this becomes Figure 2 in your paper.</div></div>
+      </div>
+    </div>
+  </div>
+
+  <h3>Days 7–8 · train CAR-IMU v2 (class + subject style)</h3>
+  <div class="day-card" style="margin-bottom:10px">
+    <div class="day-label" style="color:#3C3489">Subject-conditional model (person A)</div>
+    <div class="task" style="background:#EEEDFE">
+      <div class="task-dot" style="background:#7F77DD"></div>
+      <div><div class="task-text">Add subject-style prefix to model</div><div class="task-sub">Prepend SUBJ_s (mean-pooled real tokens from K=5 reference windows of target subject) to the prefix sequence: [CLS_c][SUBJ_s][z_1 ... z_{N-1}]. Use same architecture — just a longer prefix.</div></div>
+    </div>
+    <div class="task" style="background:#EEEDFE">
+      <div class="task-dot" style="background:#7F77DD"></div>
+      <div><div class="task-text">Train and compare to v1</div><div class="task-sub">Does subject conditioning lower val loss further? If yes, use v2 for all experiments. If not, keep v1 (simpler story). Report both in paper as an ablation.</div></div>
+    </div>
+  </div>
+
+  <h3>Days 8–9 · full evaluation suite (parallel A ∥ B ∥ C)</h3>
+  <div class="week-grid">
+    <div class="day-card">
+      <div class="day-label" style="color:#3C3489">Realism eval (person B)</div>
+      <div class="task" style="background:#EEEDFE">
+        <div class="task-dot" style="background:#7F77DD"></div>
+        <div><div class="task-text">Generate final synthetic dataset</div><div class="task-sub">Generate 2× the number of real samples per class using best model. Balance classes to equal the largest class count. Store synthetic token sequences with labels.</div></div>
+      </div>
+      <div class="task" style="background:#EEEDFE">
+        <div class="task-dot" style="background:#7F77DD"></div>
+        <div><div class="task-text">Compute FID, MMD per class</div><div class="task-sub">Run compute_fid and compute_mmd for each activity class separately. Also compute aggregate (all classes together). Fill Table 1 in the paper draft.</div></div>
+      </div>
+      <div class="task" style="background:#EEEDFE">
+        <div class="task-dot" style="background:#7F77DD"></div>
+        <div><div class="task-text">Precision & recall (Kynkäänniemi)</div><div class="task-sub">Compute manifold precision (synthetic inside real hull) and recall (real covered by synthetic). Use k=5 nearest neighbors in Bio-PM space. Both should be high — low recall = mode collapse.</div></div>
+      </div>
+    </div>
+    <div class="day-card">
+      <div class="day-label" style="color:#3B6D11">Utility eval (person C)</div>
+      <div class="task" style="background:#EAF3DE">
+        <div class="task-dot" style="background:#639922"></div>
+        <div><div class="task-text">Augmentation experiment: macro F1 vs syn ratio</div><div class="task-sub">Run train_har_classifier with syn_ratio ∈ {0, 0.10, 0.25, 0.50, 1.0 (TSTR)}. Plot F1 vs ratio. Report per-class F1 for each condition. This is Table 2 + Figure 3.</div></div>
+      </div>
+      <div class="task" style="background:#EAF3DE">
+        <div class="task-dot" style="background:#639922"></div>
+        <div><div class="task-text">Low-data regime experiment</div><div class="task-sub">Train with 10%, 25%, 50% of real data + synthetic augmentation. Compare to same real-data fractions without augmentation. Shows synthetic data compensates for missing real samples.</div></div>
+      </div>
+      <div class="task" style="background:#EAF3DE">
+        <div class="task-dot" style="background:#639922"></div>
+        <div><div class="task-text">Minority-class recovery experiment</div><div class="task-sub">Artificially downsample 1 activity to 10% of original. Augment back with CAR-IMU synthetic. Compare minority-class F1 before vs after augmentation. Key result: shows class-balancing value.</div></div>
+      </div>
+    </div>
+  </div>
+
+  <h3>Days 9–10 · ablations + paper writing (all parallel)</h3>
+  <div class="week-grid">
+    <div class="day-card">
+      <div class="day-label" style="color:#3C3489">Ablation (person A)</div>
+      <div class="task" style="background:#EEEDFE">
+        <div class="task-dot" style="background:#7F77DD"></div>
+        <div><div class="task-text">Ablation: no class conditioning</div><div class="task-sub">Train unconditional model (no [CLS_c] prefix). Compare FID and downstream F1 to class-conditional model. This ablation justifies the key design choice.</div></div>
+      </div>
+      <div class="task" style="background:#EEEDFE">
+        <div class="task-dot" style="background:#7F77DD"></div>
+        <div><div class="task-text">Ablation: raw-signal augmentation baseline</div><div class="task-sub">Apply standard jitter + rotation augmentation to raw IMU. Train HAR classifier on augmented raw data. Compare F1 to CAR-IMU. Shows latent-space augmentation advantage.</div></div>
+      </div>
+    </div>
+    <div class="day-card">
+      <div class="day-label" style="color:#3B6D11">Writing (person B + C)</div>
+      <div class="task" style="background:#EAF3DE">
+        <div class="task-dot" style="background:#639922"></div>
+        <div><div class="task-text">Draft intro + problem statement</div><div class="task-sub">Write IMU scarcity motivation, gap in conditional generation, contribution bullets. Keep to 1 page.</div></div>
+      </div>
+      <div class="task" style="background:#EAF3DE">
+        <div class="task-dot" style="background:#639922"></div>
+        <div><div class="task-text">Draft method + results sections</div><div class="task-sub">Method: Bio-PM tokenization, CAR-IMU architecture, prefix mechanism. Results: UMAP figure, FID table, downstream F1 table, ablation table. Figures first, captions second.</div></div>
+      </div>
+      <div class="task" style="background:#EAF3DE">
+        <div class="task-dot" style="background:#639922"></div>
+        <div><div class="task-text">Assemble related work section</div><div class="task-sub">Use the three-thread structure from the Prior Work tab. 3–4 sentences per thread. End each thread with your improvement.</div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="data">
+  <h2>Dataset — WISDM (primary recommendation)</h2>
+  <div class="card">
+    <h3>Why WISDM</h3>
+    <p>WISDM (Wireless Sensor Data Mining) is the best fit for a 2-week project: small enough to preprocess in hours, large enough for meaningful results, well-labeled, widely cited (easy to compare against prior work), and freely available. It has a known class imbalance problem (walking dominates), making it a natural testbed for class-balanced augmentation.</p>
+  </div>
+  <div class="card">
+    <h3>Dataset statistics</h3>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px">
+      <div class="metric-item"><div class="metric-icon" style="font-size:13px">N</div><div><strong>51 subjects</strong><div style="font-size:11px;color:var(--color-text-secondary)">diverse ages, activities</div></div></div>
+      <div class="metric-item"><div class="metric-icon" style="font-size:13px">Hz</div><div><strong>20 Hz sampling</strong><div style="font-size:11px;color:var(--color-text-secondary)">200 samples per 10s window</div></div></div>
+      <div class="metric-item"><div class="metric-icon" style="font-size:13px">6</div><div><strong>Activity classes</strong><div style="font-size:11px;color:var(--color-text-secondary)">walk, jog, sit, stand, stairs up/dn</div></div></div>
+      <div class="metric-item"><div class="metric-icon" style="font-size:13px">3</div><div><strong>Axes</strong><div style="font-size:11px;color:var(--color-text-secondary)">accelerometer X, Y, Z</div></div></div>
+    </div>
+  </div>
+  <div class="card">
+    <h3>Known class imbalance (motivates augmentation)</h3>
+    <p>Walking: ~38% · Jogging: ~30% · Standing: ~10% · Sitting: ~9% · Upstairs: ~7% · Downstairs: ~6%. The last three classes are the natural targets for synthetic augmentation — exactly the use case CAR-IMU addresses.</p>
+  </div>
+  <div class="card">
+    <h3>Preprocessing steps</h3>
+    <ul>
+      <li>Segment each subject's continuous recording into 10s windows (200 samples) with 50% overlap → ~5,000–8,000 windows total</li>
+      <li>Normalize each axis to zero mean, unit variance per subject (subject-normalized) or globally (global-normalized). Use subject-normalized for subject-style experiments.</li>
+      <li>Train/val/test split: 70/15/15 by subject (leave-N-subjects-out, not random windows). Never mix windows from the same subject across splits.</li>
+      <li>Run Bio-PM encoder on all windows, save token store. This only needs to happen once.</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>Backup datasets (if WISDM results are weak)</h3>
+    <p><span class="tag tb">UCI-HAR</span> 30 subjects, 6 activities, 50Hz — largest public benchmark, most baselines. More axe channels (accel + gyro). Harder to preprocess.<br><br>
+    <span class="tag tgr">PAMAP2</span> 9 subjects, 18 activities, IMU + heart rate. Richest, but small N makes few-shot scenarios more interesting.</p>
+  </div>
+</section>
+
+<section id="metrics">
+  <h2>Downstream tasks & metrics</h2>
+  <div class="note">Two categories: realism (is synthetic data believable?) and utility (does it actually help?). Report both.</div>
+
+  <h3>Realism metrics</h3>
+  <div class="metric-item" style="margin-bottom:6px">
+    <div style="min-width:170px"><strong>Bio-PM FID</strong> <span class="tag tp">primary</span></div>
+    <p>Fréchet distance between real and synthetic token distributions in Bio-PM space. Use Bio-PM encoder as the feature extractor (analogous to Inception FID for images). Compute per class and aggregate. <strong>Target:</strong> synthetic FID ≤ 1.5× the real-vs-held-out FID baseline.</p>
+  </div>
+  <div class="metric-item" style="margin-bottom:6px">
+    <div style="min-width:170px"><strong>MMD (RBF kernel)</strong></div>
+    <p>Maximum mean discrepancy between real and synthetic token distributions. More interpretable than FID at small N. Use permutation test for significance. <strong>Target:</strong> p &gt; 0.05 (synthetic and real not distinguishable by MMD test).</p>
+  </div>
+  <div class="metric-item" style="margin-bottom:6px">
+    <div style="min-width:170px"><strong>Precision & recall</strong></div>
+    <p>Kynkäänniemi et al. (2019): Precision = fraction of synthetic samples inside real manifold; Recall = fraction of real manifold covered by synthetic. Both high = good. Low precision = synthetic off-distribution. Low recall = mode collapse.</p>
+  </div>
+  <div class="metric-item" style="margin-bottom:6px">
+    <div style="min-width:170px"><strong>UMAP coverage</strong></div>
+    <p>Visual: do synthetic samples visually overlap real clusters per class? Quantify with k-NN density ratio. <strong>Target:</strong> ≥ 90% of real clusters have synthetic neighbors within 2× the median real intra-class distance.</p>
+  </div>
+  <div class="metric-item" style="margin-bottom:14px">
+    <div style="min-width:170px"><strong>TSTR accuracy</strong></div>
+    <p>Train-on-Synthetic, Test-on-Real. Train HAR classifier on synthetic only, evaluate on real test set. Measures how informative synthetic data is. <strong>Target:</strong> TSTR accuracy within 5pp of real-trained accuracy.</p>
+  </div>
+
+  <h3>Utility (downstream) metrics</h3>
+  <div class="metric-item" style="margin-bottom:6px">
+    <div style="min-width:170px"><strong>Macro F1 delta (Δ-F1)</strong> <span class="tag tg">primary</span></div>
+    <p>HAR macro F1 with real+synthetic training vs real-only baseline. Report for syn_ratio ∈ {0.1, 0.25, 0.5}. <strong>Target:</strong> Δ-F1 ≥ +1.5pp at 25% synthetic ratio. Minority classes should show larger gains (+3–5pp).</p>
+  </div>
+  <div class="metric-item" style="margin-bottom:6px">
+    <div style="min-width:170px"><strong>Low-data recovery curve</strong></div>
+    <p>F1 vs fraction of real data used (10%, 25%, 50%, 100%). For each fraction, compare real-only vs real+synthetic. Steeper recovery = synthetic is more useful. Report as a line plot — one of the key paper figures.</p>
+  </div>
+  <div class="metric-item" style="margin-bottom:6px">
+    <div style="min-width:170px"><strong>Minority-class F1 recovery</strong></div>
+    <p>Downsample one activity (e.g., downstairs) to 10% of original. Measure minority F1 before and after augmentation with CAR-IMU. <strong>Target:</strong> ≥ 80% recovery of full-data minority F1.</p>
+  </div>
+  <div class="metric-item" style="margin-bottom:6px">
+    <div style="min-width:170px"><strong>vs hand-crafted aug (ablation)</strong></div>
+    <p>Compare CAR-IMU augmentation to jitter + rotation augmentation (Um et al. baseline) at the same augmentation ratio. Shows that learned generation outperforms signal-space transforms.</p>
+  </div>
+  <div class="metric-item" style="margin-bottom:14px">
+    <div style="min-width:170px"><strong>vs unconditional model (ablation)</strong></div>
+    <p>Compare class-conditional CAR-IMU to an unconditional version (no prefix). Shows that class conditioning is critical — random generation without activity control hurts classification.</p>
+  </div>
+
+  <h3>Classifier choices for downstream evaluation</h3>
+  <p>Run all utility experiments with 3 classifiers on Bio-PM token representations: (1) linear probe (most interpretable), (2) 2-layer MLP (small capacity), (3) 1D-CNN on the token sequence (captures temporal order). Report all three — if gains hold across classifiers, the result is robust.</p>
+</section>
+
+<section id="future">
+  <h2>Future extensions</h2>
+  <div class="note">These are directions you can mention in the paper's conclusion section to demonstrate awareness of the space. The best 1–2 could become follow-up papers.</div>
+
+  <div class="future-item">
+    <div class="fut-num" style="background:#EEEDFE;color:#3C3489">1</div>
+    <div>
+      <p style="font-weight:500;color:var(--color-text-primary);margin-bottom:3px">Latent diffusion upgrade (DDPM / DDIM in token space)</p>
+      <p>Replace the autoregressive decoder with a denoising diffusion model trained on the token-sequence matrix. DDPM in Bio-PM space benefits from better-conditioned latents than raw signal. Use classifier-free guidance for activity conditioning. Directly extends CAR-IMU and is the natural next paper.</p>
+      <div style="margin-top:5px"><span class="tag tp">Novelty 4/5</span><span class="tag ta">Medium GPU required</span></div>
+    </div>
+  </div>
+
+  <div class="future-item">
+    <div class="fut-num" style="background:#EEEDFE;color:#3C3489">2</div>
+    <div>
+      <p style="font-weight:500;color:var(--color-text-primary);margin-bottom:3px">Cross-subject style transfer via flow matching</p>
+      <p>Condition generation on a "source subject" embedding to produce synthetic data in the style of rare or unseen subjects. Use conditional flow matching (Lipman et al., 2022) to learn straight-line ODE paths between classes. Directly addresses clinical HAR where rare populations (elderly, patients) are underrepresented.</p>
+      <div style="margin-top:5px"><span class="tag tp">Novelty 5/5</span><span class="tag tg">Strong clinical motivation</span></div>
+    </div>
+  </div>
+
+  <div class="future-item">
+    <div class="fut-num" style="background:#FAEEDA;color:#854F0B">3</div>
+    <div>
+      <p style="font-weight:500;color:var(--color-text-primary);margin-bottom:3px">Lightweight signal decoder: tokens → raw IMU waveforms</p>
+      <p>Train a 1D-CNN decoder that maps generated token sequences back to approximate raw IMU waveforms, enabling traditional signal-level augmentation pipelines to use CAR-IMU outputs. Supervised by reconstruction loss on real (IMU, token) pairs. Opens CAR-IMU to models that don't use Bio-PM embeddings.</p>
+      <div style="margin-top:5px"><span class="tag ta">3–4 days extra work</span><span class="tag tg">High practical value</span></div>
+    </div>
+  </div>
+
+  <div class="future-item">
+    <div class="fut-num" style="background:#FAEEDA;color:#854F0B">4</div>
+    <div>
+      <p style="font-weight:500;color:var(--color-text-primary);margin-bottom:3px">Few-shot HAR via synthetic data bootstrapping</p>
+      <p>Given only 5–10 real examples of a new activity (e.g., fall detection), use CAR-IMU to generate a full training set for that activity. This reframes the project as a few-shot learning enabler rather than just an augmentation tool — a stronger and more publishable narrative.</p>
+      <div style="margin-top:5px"><span class="tag tp">Strong paper angle</span><span class="tag tb">Small experiment, high impact</span></div>
+    </div>
+  </div>
+
+  <div class="future-item">
+    <div class="fut-num" style="background:#EAF3DE;color:#3B6D11">5</div>
+    <div>
+      <p style="font-weight:500;color:var(--color-text-primary);margin-bottom:3px">Multi-modal conditioning: activity + context (location, time of day)</p>
+      <p>Extend the prefix mechanism to include environmental context tokens (indoor/outdoor, morning/afternoon, device position). Enables richer conditional generation where activity and context jointly determine the motion pattern — relevant for realistic simulation of wearable device deployments.</p>
+      <div style="margin-top:5px"><span class="tag tgr">Long-term direction</span><span class="tag tg">New dataset needed</span></div>
+    </div>
+  </div>
+
+  <div class="future-item">
+    <div class="fut-num" style="background:#EAF3DE;color:#3B6D11">6</div>
+    <div>
+      <p style="font-weight:500;color:var(--color-text-primary);margin-bottom:3px">Privacy-preserving synthetic HAR data release</p>
+      <p>Use CAR-IMU to release a synthetic version of a private clinical IMU dataset that preserves statistical properties without exposing individual subjects' motion signatures. Evaluate with differential privacy guarantees and membership inference attack resistance. New application area with clear societal value.</p>
+      <div style="margin-top:5px"><span class="tag tg">High real-world value</span><span class="tag tr">Requires privacy evaluation expertise</span></div>
+    </div>
+  </div>
+</section>
+</div>
+<script>
+function show(id,btn){
+  document.querySelectorAll('section').forEach(s=>s.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+  btn.classList.add('active');
+}
+</script>

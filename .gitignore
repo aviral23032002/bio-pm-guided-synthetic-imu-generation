@@ -1,0 +1,64 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Virtual environments ───────────────────────────────────────────────────────
+CS690r_project/
+venv/
+env/
+.venv/
+.env/
+
+# ── macOS ─────────────────────────────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# ── Raw dataset (too large, ~50MB+) ───────────────────────────────────────────
+WISDM_ar_v1.1/
+
+# ── Preprocessed HDF5 files (large binary, re-generatable) ────────────────────
+preprocessed_biopm/
+preprocessed_biopm_test/
+wisdm_windows.hdf5
+*.h5
+*.hdf5
+
+# ── Large result files ─────────────────────────────────────────────────────────
+# token_store is ~500MB — too large for GitHub
+results_week1/token_store.hdf5
+results_week1_test/token_store.hdf5
+
+# Feature npz files (large, re-generatable from scripts)
+features/
+*.npz
+
+# ── Model checkpoint (large weights file) ─────────────────────────────────────
+CS690TR/checkpoints/checkpoint.pt
+
+# ── Logs ──────────────────────────────────────────────────────────────────────
+*.log
+preprocess_all.log
+
+# ── IDE / editor ──────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ── Jupyter ───────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── Misc ──────────────────────────────────────────────────────────────────────
+*.tmp
+*.bak
