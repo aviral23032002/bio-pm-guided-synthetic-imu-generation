@@ -34,20 +34,30 @@ wisdm_windows.hdf5
 *.hdf5
 
 # ── Large result files ─────────────────────────────────────────────────────────
-# token_store is ~500MB — too large for GitHub
 results_week1/token_store.hdf5
 results_week1_test/token_store.hdf5
 
-# Feature npz files (large, re-generatable from scripts)
+# ── Feature npz files (large, re-generatable from scripts) ────────────────────
 features/
 *.npz
 
-# ── Model checkpoint (large weights file) ─────────────────────────────────────
+# ── Bio-PM model checkpoint (large, not ours) ─────────────────────────────────
 CS690TR/checkpoints/checkpoint.pt
+
+# ── Week 2: CAR-IMU checkpoints (large .pt files, re-trainable) ───────────────
+car_imu_checkpoints/
+
+# ── Week 2: Generated synthetic token stores (large HDF5, re-generatable) ─────
+synthetic_tokens/
+synthetic_tokens_*/
+
+# ── Loss/result numpy files (small, keep tracked) ─────────────────────────────
+# results_week2/*.npy  ← intentionally NOT ignored (small files, useful to share)
 
 # ── Logs ──────────────────────────────────────────────────────────────────────
 *.log
 preprocess_all.log
+generate.log
 
 # ── IDE / editor ──────────────────────────────────────────────────────────────
 .vscode/
@@ -55,9 +65,8 @@ preprocess_all.log
 *.swp
 *.swo
 
-# ── Jupyter ───────────────────────────────────────────────────────────────────
+# ── Jupyter (checkpoints only — notebooks ARE tracked) ────────────────────────
 .ipynb_checkpoints/
-*.ipynb
 
 # ── Misc ──────────────────────────────────────────────────────────────────────
 *.tmp

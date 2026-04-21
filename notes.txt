@@ -280,3 +280,47 @@ weighted avg       0.87      0.86      0.86        59
    umap_subjects.png        ← subject separation plot
    baseline_results.npy     ← real-only F1 to beat
 ════════════════════════════════════════════════════════════
+
+
+
+
+
+
+
+
+
+
+
+
+python3 -c "                                                             
+import h5py, numpy as np
+with h5py.File('results_week1/token_store.hdf5', 'r') as f:
+    print('Keys:', list(f.keys()))
+    print('tokens shape:     ', f['tokens'].shape)
+    print('tokens dtype:     ', f['tokens'].dtype)
+    print('mean_tokens shape:', f['mean_tokens'].shape)
+    print('labels shape:     ', f['labels'].shape)
+    print('subject_ids shape:', f['subject_ids'].shape)
+    print('Unique labels:    ', np.unique(f['labels'][:]))
+    print('Label counts:     ')
+    labels = f['labels'][:]
+    for l in np.unique(labels):
+        print(f'  class {int(l)}: {(labels==l).sum()} windows')
+"
+
+Output
+
+Keys: ['labels', 'mean_tokens', 'subject_ids', 'tokens', 'window_ids']
+tokens shape:      (10810, 192, 64)
+tokens dtype:      float32
+mean_tokens shape: (10810, 64)
+labels shape:      (10810,)
+subject_ids shape: (10810,)
+Unique labels:     [0. 1. 2. 3. 4. 5.]
+Label counts:     
+  class 0: 4168 windows
+  class 1: 3361 windows
+  class 2: 1224 windows
+  class 3: 994 windows
+  class 4: 592 windows
+  class 5: 471 windows
