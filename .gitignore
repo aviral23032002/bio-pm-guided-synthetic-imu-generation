@@ -71,3 +71,14 @@ generate.log
 # ── Misc ──────────────────────────────────────────────────────────────────────
 *.tmp
 *.bak
+
+# ── Large numpy files (keep specific ones tracked) ──────────────────────
+!results_week1/*.npy
+!results_week1_test/*.npy
+!results_week2/*.npy
+!synthetic_tokens/*.npy
+
+*.pt
+*.npz
+*.h5
+*.npy
