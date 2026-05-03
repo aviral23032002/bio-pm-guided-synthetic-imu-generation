@@ -3,9 +3,9 @@
 car_imu_decoder.py — CAR-IMU: Class-Conditional Autoregressive IMU Decoder
 
 WHAT THIS FILE IS:
-    The core model for our project. It is a small GPT-style transformer that
-    learns to predict Bio-PM token sequences one step at a time, conditioned
-    on an activity class label.
+    The core model for our project. A custom IMU Transformer that learns to
+    predict Bio-PM token sequences one step at a time, conditioned on an
+    activity class label.
 
 HOW IT FITS INTO THE PIPELINE:
     Bio-PM encoder (frozen) → tokens Z (192×64) per window
@@ -20,13 +20,16 @@ HOW IT FITS INTO THE PIPELINE:
                                         ↓
                              Augment real Z pool → better HAR classifier
 
-ARCHITECTURE:
-    - 4-layer causal transformer (like GPT, not BERT — generates left-to-right)
-    - D = 64  (matches Bio-PM token dimension exactly)
+ARCHITECTURE (CHANGE 1 — Custom IMU Transformer):
+    - IMUPositionalEncoding: class-specific learnable frequency+phase PE
+    - DualScopeAttention:    local (window=16) + global causal attention, gated
+    - SpectralFFN:           token branch + frequency branch, merged
+    - IMUTransformerLayer:   pre-norm attn + pre-norm SpectralFFN
+    - 4 stacked IMUTransformerLayer blocks
+    - D = 64 (matches Bio-PM token dimension exactly)
     - 4 attention heads, FFN dim = 128
     - Activity-class prefix token [CLS_c] learned embedding
     - Output head: Linear(64 → 64), no activation
-    - ~1.2M parameters — trains in minutes on CPU
 
 DESIGN DECISION — NO SUBJECT CONDITIONING:
     Week 1 analysis showed 0% subject separation in Bio-PM's embedding space.
@@ -65,145 +68,219 @@ ACTIVITY_NAMES = {
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 1.  POSITIONAL ENCODING
-#     Adds position information to each token so the model knows "this is
-#     token #5 out of 192". Without this, the transformer treats all positions
-#     identically.
+# 1.  IMU POSITIONAL ENCODING
+#     Each activity class gets its own learnable frequency and phase.
+#     This lets the model learn class-specific temporal rhythms
+#     (e.g., jogging has faster periodicity than sitting).
 # ══════════════════════════════════════════════════════════════════════════════
-class SinusoidalPositionalEncoding(nn.Module):
+class IMUPositionalEncoding(nn.Module):
     """
-    Fixed sinusoidal position embeddings (no learnable params).
-    Same as the original "Attention Is All You Need" paper.
+    Class-conditional positional encoding with learnable frequency and phase.
 
-    For each position pos and each dimension i:
-        PE(pos, 2i)   = sin(pos / 10000^(2i/D))
-        PE(pos, 2i+1) = cos(pos / 10000^(2i/D))
+    For each class c, position t, and model dimension d:
+        periodic_bias[c, t, :] = sin(2π * freq[c] * t / seq_len + phase[c])
+
+    Also adds a standard learnable base PE (nn.Embedding over positions).
     """
-    def __init__(self, d_model: int, max_len: int = 512, dropout: float = 0.1):
+    def __init__(self, num_classes: int, d_model: int, max_len: int = 512,
+                 dropout: float = 0.1):
         super().__init__()
-        self.dropout = nn.Dropout(p=dropout)
+        self.dropout   = nn.Dropout(p=dropout)
+        self.d_model   = d_model
+        self.num_classes = num_classes
 
-        # Build the fixed PE table: shape (1, max_len, d_model)
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(
-            torch.arange(0, d_model, 2, dtype=torch.float) *
-            (-math.log(10000.0) / d_model)
+        # Per-class learnable frequency and phase — shape (num_classes, 1, d_model)
+        self.freq  = nn.Parameter(torch.ones(num_classes, 1, d_model))
+        self.phase = nn.Parameter(torch.zeros(num_classes, 1, d_model))
+
+        # Standard learnable base positional embedding over positions
+        self.base_pe = nn.Embedding(max_len, d_model)
+
+        nn.init.uniform_(self.freq,  0.5, 2.0)   # sensible frequency range
+        nn.init.uniform_(self.phase, -math.pi, math.pi)
+        nn.init.trunc_normal_(self.base_pe.weight, std=0.02)
+
+    def forward(self, x: torch.Tensor, class_ids: torch.Tensor,
+                seq_len: int) -> torch.Tensor:
+        """
+        x:         (B, T, d_model)
+        class_ids: (B,)  integer activity labels
+        seq_len:   T (current sequence length)
+
+        Returns x + periodic_bias + base_pe, shape (B, T, d_model)
+        """
+        B, T, D = x.shape
+        device = x.device
+
+        # ── Periodic bias (class-specific) ────────────────────────────────────
+        # t: (1, T, 1) — time positions
+        t = torch.arange(T, device=device, dtype=torch.float32).view(1, T, 1)
+
+        # freq[class_ids]: (B, 1, D);  phase[class_ids]: (B, 1, D)
+        freq  = self.freq[class_ids]   # (B, 1, D)
+        phase = self.phase[class_ids]  # (B, 1, D)
+
+        # Broadcast over T: (B, T, D)
+        periodic_bias = torch.sin(
+            2.0 * math.pi * freq * t / float(seq_len) + phase
         )
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0)              # (1, max_len, d_model)
-        self.register_buffer("pe", pe)   # not a parameter, but saved with model
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """x: (B, L, D) — adds positional encoding to each token."""
-        x = x + self.pe[:, :x.size(1), :]
-        return self.dropout(x)
+        # ── Learnable base PE ─────────────────────────────────────────────────
+        positions = torch.arange(T, device=device, dtype=torch.long)  # (T,)
+        base = self.base_pe(positions).unsqueeze(0)                    # (1, T, D)
+
+        return self.dropout(x + periodic_bias + base)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 2.  CAUSAL SELF-ATTENTION
-#     "Causal" means each token can only look at itself and tokens BEFORE it.
-#     This is what makes generation work — at step t, the model only sees z_1..z_t
-#     and cannot cheat by looking at future tokens.
+# 2.  DUAL SCOPE ATTENTION
+#     Two parallel causal attention streams:
+#       - local_attn:  only attends to the last `local_window` tokens → captures
+#                      fine-grained IMU motion patterns (stride rhythm, etc.)
+#       - global_attn: full causal attention → captures long-range activity context
+#     A learned gate blends them per-position.
 # ══════════════════════════════════════════════════════════════════════════════
-class CausalSelfAttention(nn.Module):
+class DualScopeAttention(nn.Module):
     """
-    Multi-head self-attention with a causal (upper-triangular) mask.
-
-    Standard scaled dot-product attention:
-        Attention(Q, K, V) = softmax(QK^T / sqrt(d_k)) * V
-
-    The causal mask fills future positions with -inf so softmax gives them 0 weight.
+    Gated combination of local-windowed and global causal multi-head attention.
     """
-    def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1):
+    def __init__(self, d_model: int, n_heads: int, dropout: float = 0.1,
+                 local_window: int = 16):
         super().__init__()
-        assert d_model % n_heads == 0, "d_model must be divisible by n_heads"
+        self.local_window = local_window
 
-        self.n_heads = n_heads
-        self.head_dim = d_model // n_heads
-        self.scale = self.head_dim ** -0.5     # 1/sqrt(d_k) scaling factor
+        self.local_attn  = nn.MultiheadAttention(d_model, n_heads,
+                                                  dropout=dropout,
+                                                  batch_first=True)
+        self.global_attn = nn.MultiheadAttention(d_model, n_heads,
+                                                  dropout=dropout,
+                                                  batch_first=True)
 
-        # Single linear projects input into Q, K, V all at once
-        self.qkv_proj = nn.Linear(d_model, 3 * d_model, bias=False)
-        self.out_proj  = nn.Linear(d_model, d_model, bias=False)
-        self.dropout   = nn.Dropout(dropout)
+        # Gate: sigmoid(Linear(cat(local, global))) → (B, T, d_model)
+        self.gate_proj = nn.Linear(d_model * 2, d_model)
+
+    # ── Helper: build the local causal mask ───────────────────────────────────
+    def _local_causal_mask(self, T: int, window: int,
+                           device: torch.device) -> torch.Tensor:
+        """
+        Returns (T, T) additive mask.
+        Position i can attend to j if:  max(0, i-window) <= j <= i
+        All other positions get -inf.
+        """
+        mask = torch.full((T, T), float("-inf"), device=device)
+        for i in range(T):
+            start = max(0, i - window)
+            mask[i, start : i + 1] = 0.0
+        return mask
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        x: (B, L, D)  where L = sequence length (includes [CLS_c] prefix)
-        Returns: (B, L, D)
-        """
-        B, L, D = x.shape
+        """x: (B, T, D) → (B, T, D)"""
+        B, T, D = x.shape
+        device  = x.device
 
-        # Project to Q, K, V and split into heads
-        qkv = self.qkv_proj(x)                         # (B, L, 3D)
-        q, k, v = qkv.split(D, dim=-1)                 # each: (B, L, D)
-
-        # Reshape for multi-head: (B, n_heads, L, head_dim)
-        q = q.view(B, L, self.n_heads, self.head_dim).transpose(1, 2)
-        k = k.view(B, L, self.n_heads, self.head_dim).transpose(1, 2)
-        v = v.view(B, L, self.n_heads, self.head_dim).transpose(1, 2)
-
-        # Scaled dot-product attention scores: (B, n_heads, L, L)
-        attn = torch.matmul(q, k.transpose(-2, -1)) * self.scale
-
-        # ── Causal mask: token at position i cannot attend to position j > i ──
-        # Creates upper triangle of -inf so those positions get ~0 weight in softmax
+        # ── Standard full causal mask (upper triangle = -inf) ─────────────────
         causal_mask = torch.triu(
-            torch.ones(L, L, device=x.device, dtype=torch.bool), diagonal=1
+            torch.full((T, T), float("-inf"), device=device), diagonal=1
         )
-        attn = attn.masked_fill(causal_mask[None, None, :, :], float("-inf"))
 
-        attn = F.softmax(attn, dim=-1)
-        attn = self.dropout(attn)
+        # ── Local causal mask ─────────────────────────────────────────────────
+        local_mask = self._local_causal_mask(T, self.local_window, device)
 
-        # Weighted sum of values: (B, n_heads, L, head_dim) → (B, L, D)
-        out = torch.matmul(attn, v)
-        out = out.transpose(1, 2).contiguous().view(B, L, D)
-        return self.out_proj(out)
+        local_out,  _ = self.local_attn(x, x, x,  attn_mask=local_mask,
+                                        need_weights=False)
+        global_out, _ = self.global_attn(x, x, x, attn_mask=causal_mask,
+                                         need_weights=False)
+
+        # ── Gated fusion ──────────────────────────────────────────────────────
+        gate = torch.sigmoid(
+            self.gate_proj(torch.cat([local_out, global_out], dim=-1))
+        )  # (B, T, D)
+
+        return gate * local_out + (1.0 - gate) * global_out
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 3.  TRANSFORMER DECODER BLOCK
-#     One layer = LayerNorm → CausalAttention → Residual → LayerNorm → FFN → Residual
-#     We stack 4 of these.
+# 3.  SPECTRAL FFN
+#     Two branches combined:
+#       - Token branch:     standard 2-layer MLP (captures per-token patterns)
+#       - Frequency branch: rFFT magnitude → Linear (captures spectral content)
+#     Both are merged via a final linear projection.
 # ══════════════════════════════════════════════════════════════════════════════
-class TransformerDecoderBlock(nn.Module):
+class SpectralFFN(nn.Module):
     """
-    Pre-LN transformer block (LayerNorm BEFORE attention, not after).
-    Pre-LN is more stable to train than the original post-LN design.
+    Spectral-aware feedforward network.
 
-    FFN is a simple 2-layer MLP: D → 2D → D with GELU activation.
+    Token branch:     x → Linear(D→ffn_dim) → GELU → Linear(ffn_dim→D)
+    Frequency branch: rfft(x, dim=-1).abs() → Linear(D//2+1 → D)
+    Merged:           Linear(2D → D) applied to concat of both outputs.
+
+    FFT is over the last (token embedding) dimension, shape (B, T, D).
     """
-    def __init__(self, d_model: int, n_heads: int,
-                 ffn_dim: int, dropout: float = 0.1):
+    def __init__(self, d_model: int, ffn_dim: int, dropout: float = 0.1):
+        super().__init__()
+        freq_in = d_model // 2 + 1   # rfft output size for real input of length D
+
+        # Token branch
+        self.tok_fc1  = nn.Linear(d_model, ffn_dim)
+        self.tok_fc2  = nn.Linear(ffn_dim, d_model)
+        self.tok_drop = nn.Dropout(dropout)
+
+        # Frequency branch
+        self.freq_fc  = nn.Linear(freq_in, d_model)
+
+        # Merge
+        self.merge    = nn.Linear(d_model * 2, d_model)
+        self.drop_out = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """x: (B, T, D) → (B, T, D)"""
+        # Token branch
+        tok = self.tok_drop(F.gelu(self.tok_fc1(x)))
+        tok = self.tok_fc2(tok)                        # (B, T, D)
+
+        # Frequency branch — rfft over last dim (token embedding dims)
+        freq_mag = torch.fft.rfft(x, dim=-1).abs()    # (B, T, D//2+1)
+        freq_out = self.freq_fc(freq_mag)              # (B, T, D)
+
+        # Merge both branches
+        merged = self.merge(torch.cat([tok, freq_out], dim=-1))  # (B, T, D)
+        return self.drop_out(merged)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 4.  IMU TRANSFORMER LAYER
+#     Pre-norm wrapper: DualScopeAttention + SpectralFFN with residuals.
+# ══════════════════════════════════════════════════════════════════════════════
+class IMUTransformerLayer(nn.Module):
+    """
+    Pre-LN transformer layer using DualScopeAttention and SpectralFFN.
+
+        x = x + DualScopeAttention(LayerNorm(x))
+        x = x + SpectralFFN(LayerNorm(x))
+    """
+    def __init__(self, d_model: int, n_heads: int, ffn_dim: int,
+                 dropout: float = 0.1, local_window: int = 16):
         super().__init__()
         self.ln1  = nn.LayerNorm(d_model)
-        self.attn = CausalSelfAttention(d_model, n_heads, dropout)
+        self.attn = DualScopeAttention(d_model, n_heads, dropout, local_window)
         self.ln2  = nn.LayerNorm(d_model)
-        self.ffn  = nn.Sequential(
-            nn.Linear(d_model, ffn_dim),
-            nn.GELU(),                    # GELU is smoother than ReLU, standard in GPT
-            nn.Dropout(dropout),
-            nn.Linear(ffn_dim, d_model),
-            nn.Dropout(dropout),
-        )
+        self.ffn  = SpectralFFN(d_model, ffn_dim, dropout)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Attention sub-layer with residual connection
         x = x + self.attn(self.ln1(x))
-        # FFN sub-layer with residual connection
         x = x + self.ffn(self.ln2(x))
         return x
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# 4.  CAR-IMU DECODER  (the full model)
+# 5.  CAR-IMU DECODER  (the full model)
 # ══════════════════════════════════════════════════════════════════════════════
 class CARIMUDecoder(nn.Module):
     """
     Class-conditional Autoregressive IMU Decoder.
+
+    Same external interface as the original GPT-style version —
+    train_car_imu.py and generate_synthetic.py need no changes.
 
     At training time (teacher forcing):
         Input:  [CLS_c]  z_1  z_2  ...  z_{L-1}    (length = L+1)
@@ -242,34 +319,28 @@ class CARIMUDecoder(nn.Module):
         self.num_classes  = num_classes
 
         # ── [CLS_c]: one learned embedding vector per activity class ────────
-        # When we want to generate "Jogging", we look up class_emb[1]
-        # This single vector is the ONLY conditioning signal (no subject vector)
         self.class_emb = nn.Embedding(num_classes, d_model)
         nn.init.trunc_normal_(self.class_emb.weight, std=0.02)
 
-        # ── Positional encoding (sinusoidal, fixed) ─────────────────────────
-        self.pos_enc = SinusoidalPositionalEncoding(
-            d_model, max_len=max_seq_len, dropout=dropout)
+        # ── Class-conditional positional encoding ────────────────────────────
+        self.pos_enc = IMUPositionalEncoding(
+            num_classes, d_model, max_len=max_seq_len, dropout=dropout)
 
-        # ── Input projection: Bio-PM tokens are already D-dim, but we add
-        #    a learned linear to let the model scale/rotate the input space
+        # ── Input projection ─────────────────────────────────────────────────
         self.input_proj = nn.Linear(d_model, d_model, bias=False)
 
-        # ── 4 causal transformer blocks ─────────────────────────────────────
+        # ── 4 custom IMU transformer layers ──────────────────────────────────
         self.layers = nn.ModuleList([
-            TransformerDecoderBlock(d_model, n_heads, ffn_dim, dropout)
+            IMUTransformerLayer(d_model, n_heads, ffn_dim, dropout,
+                                local_window=16)
             for _ in range(n_layers)
         ])
 
-        # ── Final layer norm + output head ──────────────────────────────────
-        # Output head maps hidden state back to token space (D → D)
-        # No activation — we want real-valued embeddings, not probabilities
-        self.ln_final  = nn.LayerNorm(d_model)
-        self.out_head  = nn.Linear(d_model, d_model, bias=False)
+        # ── Final layer norm + output head ───────────────────────────────────
+        self.ln_final = nn.LayerNorm(d_model)
+        self.out_head = nn.Linear(d_model, d_model, bias=False)
 
-        # ── Weight tying: tie output head to input projection ───────────────
-        # Common trick — helps regularization. Means the model learns
-        # "tokens that go in" and "tokens that come out" in the same space.
+        # Weight tying: output head ↔ input projection
         self.out_head.weight = self.input_proj.weight
 
         self._init_weights()
@@ -285,45 +356,40 @@ class CARIMUDecoder(nn.Module):
     # ──────────────────────────────────────────────────────────────────────────
     def forward(
         self,
-        tokens: torch.Tensor,      # (B, L, 64) — real Bio-PM tokens from token_store
-        class_labels: torch.Tensor # (B,)        — integer activity class 0-5
+        tokens:       torch.Tensor,   # (B, L, 64)
+        class_labels: torch.Tensor    # (B,)
     ) -> torch.Tensor:
         """
         Teacher-forcing forward pass for training.
 
-        Takes the full token sequence and prepends [CLS_c].
-        Returns predicted tokens at every position.
-
         Args:
             tokens:       (B, L, 64)  real token sequences from token_store.hdf5
-            class_labels: (B,)        integer labels (0=Walking ... 5=Standing)
+            class_labels: (B,)        integer labels (0=Walking … 5=Standing)
 
         Returns:
             logits: (B, L+1, 64)  predicted token at each position
                     → during training we compare logits[:, 1:, :] to tokens
-                       (shift by 1: position 0 is [CLS_c], not a real token)
         """
         B, L, D = tokens.shape
 
         # 1. Look up class embedding: (B, 1, D)
-        cls_token = self.class_emb(class_labels).unsqueeze(1)  # (B, 1, 64)
+        cls_token = self.class_emb(class_labels).unsqueeze(1)
 
         # 2. Project real tokens into model space: (B, L, D)
         tok_proj = self.input_proj(tokens)
 
-        # 3. Concatenate [CLS_c] + tokens → input sequence of length L+1
-        #    Shape: (B, L+1, 64)
+        # 3. Concatenate [CLS_c] + tokens → (B, L+1, D)
         seq = torch.cat([cls_token, tok_proj], dim=1)
 
-        # 4. Add positional encoding
-        seq = self.pos_enc(seq)
+        # 4. Class-conditional positional encoding
+        seq = self.pos_enc(seq, class_labels, seq_len=seq.size(1))
 
-        # 5. Pass through 4 causal transformer layers
+        # 5. Pass through 4 IMU transformer layers
         for layer in self.layers:
             seq = layer(seq)
 
         # 6. Final layer norm + output projection → (B, L+1, 64)
-        seq = self.ln_final(seq)
+        seq    = self.ln_final(seq)
         logits = self.out_head(seq)
 
         return logits   # training uses logits[:, 1:, :] vs tokens as target
@@ -340,14 +406,8 @@ class CARIMUDecoder(nn.Module):
         """
         Autoregressive sampling — generates ONE synthetic token sequence.
 
-        At each step, the model predicts the next token given everything before.
-        We add Gaussian noise scaled by `temperature` to get variation.
-            τ = 0.0  →  greedy (always use the predicted mean, no randomness)
-            τ = 0.5  →  mild stochastic  ← good starting point
-            τ = 1.0  →  full noise
-
         Args:
-            class_label: which activity to generate (0=Walking ... 5=Standing)
+            class_label: which activity to generate (0=Walking … 5=Standing)
             n_tokens:    how many tokens to generate (default 192 = SEQ_LEN)
             temperature: noise level for stochastic sampling
             device:      'cpu' or 'cuda'
@@ -357,38 +417,32 @@ class CARIMUDecoder(nn.Module):
         """
         self.eval()
 
-        # Start with just the class token: shape (1, 1, 64)
-        label_tensor = torch.tensor([class_label], dtype=torch.long, device=device)
+        label_tensor = torch.tensor([class_label], dtype=torch.long,
+                                    device=device)
         context = self.class_emb(label_tensor).unsqueeze(1)  # (1, 1, 64)
 
         generated_tokens = []
 
         for step in range(n_tokens):
-            # Add positional encoding to current context
-            context_pe = self.pos_enc(context)
+            ctx_pe = self.pos_enc(context, label_tensor,
+                                  seq_len=context.size(1))
 
-            # Pass through all transformer layers
-            h = context_pe
+            h = ctx_pe
             for layer in self.layers:
                 h = layer(h)
 
-            # Get prediction for the LAST position only
             h = self.ln_final(h)
-            next_token_pred = self.out_head(h[:, -1, :])  # (1, 64)
+            next_token_pred = self.out_head(h[:, -1, :])   # (1, 64)
 
-            # Add temperature-scaled Gaussian noise for stochastic sampling
             if temperature > 0.0:
-                noise = torch.randn_like(next_token_pred) * temperature
-                next_token_pred = next_token_pred + noise
+                next_token_pred = next_token_pred + \
+                    torch.randn_like(next_token_pred) * temperature
 
-            generated_tokens.append(next_token_pred)  # save this token
+            generated_tokens.append(next_token_pred)
 
-            # Append predicted token to context for next step
-            # Must project it back through input_proj to stay in model space
-            next_proj = self.input_proj(next_token_pred).unsqueeze(1)  # (1, 1, 64)
-            context = torch.cat([context, next_proj], dim=1)           # grow by 1
+            next_proj = self.input_proj(next_token_pred).unsqueeze(1)
+            context   = torch.cat([context, next_proj], dim=1)
 
-        # Stack all generated tokens: (n_tokens, 64)
         return torch.cat(generated_tokens, dim=0).squeeze()
 
     @torch.no_grad()
@@ -403,14 +457,7 @@ class CARIMUDecoder(nn.Module):
         """
         Generate multiple synthetic sequences for one class.
 
-        Args:
-            class_label: activity class to generate
-            n_samples:   how many sequences to generate
-            n_tokens:    tokens per sequence (192)
-            temperature: sampling noise
-
-        Returns:
-            (n_samples, n_tokens, 64)  batch of synthetic token sequences
+        Returns: (n_samples, n_tokens, 64)
         """
         samples = []
         for _ in range(n_samples):
@@ -419,8 +466,24 @@ class CARIMUDecoder(nn.Module):
         return torch.cat(samples, dim=0)
 
     def count_parameters(self) -> int:
-        """Returns number of trainable parameters."""
-        return sum(p.numel() for p in self.parameters() if p.requires_grad)
+        """
+        Print parameter count by component and return total.
+        """
+        component_params = {
+            "class_emb":    sum(p.numel() for p in self.class_emb.parameters()),
+            "pos_enc":      sum(p.numel() for p in self.pos_enc.parameters()),
+            "input_proj":   sum(p.numel() for p in self.input_proj.parameters()),
+            "layers":       sum(p.numel() for p in self.layers.parameters()),
+            "ln_final":     sum(p.numel() for p in self.ln_final.parameters()),
+            "out_head":     sum(p.numel() for p in self.out_head.parameters()
+                                if p.requires_grad),
+        }
+        total = sum(p.numel() for p in self.parameters() if p.requires_grad)
+        print("  Parameter count by component:")
+        for name, n in component_params.items():
+            print(f"    {name:<14} {n:>8,}")
+        print(f"    {'TOTAL':<14} {total:>8,}")
+        return total
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -443,11 +506,11 @@ if __name__ == "__main__":
     )
     model.eval()
 
-    print(f"\nModel parameters: {model.count_parameters():,}")
-    print(f"  (should be ~1-2M for a lightweight decoder)")
+    print(f"\nModel parameters:")
+    total = model.count_parameters()
 
     # ── Test forward pass (training mode) ─────────────────────────────────────
-    B, L, D = 4, SEQ_LEN, TOKEN_DIM   # batch=4, 192 tokens, 64 dims
+    B, L, D = 4, SEQ_LEN, TOKEN_DIM
     fake_tokens = torch.randn(B, L, D)
     fake_labels = torch.randint(0, NUM_CLASSES, (B,))
 
@@ -457,8 +520,7 @@ if __name__ == "__main__":
     print(f"  Labels:       {fake_labels.tolist()}")
     print(f"  Output shape: {logits.shape}  (B, L+1, D)")
 
-    # During training we compute loss on logits[:, 1:, :] vs fake_tokens
-    pred = logits[:, 1:, :]   # shift: drop position 0 ([CLS_c] prediction)
+    pred = logits[:, 1:, :]
     loss = F.mse_loss(pred, fake_tokens)
     print(f"  MSE loss (random init, should be ~1.0): {loss.item():.4f}")
 

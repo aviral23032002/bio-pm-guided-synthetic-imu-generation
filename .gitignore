@@ -51,8 +51,6 @@ car_imu_checkpoints/
 synthetic_tokens/
 synthetic_tokens_*/
 
-# ── Loss/result numpy files (small, keep tracked) ─────────────────────────────
-# results_week2/*.npy  ← intentionally NOT ignored (small files, useful to share)
 
 # ── Logs ──────────────────────────────────────────────────────────────────────
 *.log
@@ -71,3 +69,11 @@ generate.log
 # ── Misc ──────────────────────────────────────────────────────────────────────
 *.tmp
 *.bak
+
+*.pt
+*.npy
+*.npz
+*.h5
+
+
+

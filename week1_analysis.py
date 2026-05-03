@@ -376,8 +376,7 @@ def baseline_har_classifier(features_path: str, out_dir: str):
         X_te = scaler.transform(X_te)
 
         # Linear probe
-        lr = LogisticRegression(C=1.0, max_iter=1000, solver='lbfgs',
-                                 multi_class='multinomial')
+        lr = LogisticRegression(C=1.0, max_iter=1000, solver='lbfgs')
         lr.fit(X_tr, y_tr)
         lr_f1 = f1_score(y_te, lr.predict(X_te), average='macro')
 
@@ -408,8 +407,7 @@ def baseline_har_classifier(features_path: str, out_dir: str):
             X_tr = scaler.fit_transform(X[tr_i])
             X_te = scaler.transform(X[te_i])
 
-            lr = LogisticRegression(C=1.0, max_iter=1000, solver='lbfgs',
-                                     multi_class='multinomial')
+            lr = LogisticRegression(C=1.0, max_iter=1000, solver='lbfgs')
             lr.fit(X_tr, y[tr_i])
             lr_f1s.append(f1_score(y[te_i], lr.predict(X_te),
                                     average='macro', zero_division=0))
