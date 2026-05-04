@@ -34,7 +34,7 @@ def train_model(X_train_t, y_train_t, X_test_t, input_dim, device, epochs=200):
     X_tr, y_tr = X_train_t[:-n_val], y_train_t[:-n_val]
     X_va, y_va = X_train_t[-n_val:], y_train_t[-n_val:]
 
-    loader = DataLoader(TensorDataset(X_tr, y_tr), batch_size=2048, shuffle=True, pin_memory=True)
+    loader = DataLoader(TensorDataset(X_tr, y_tr), batch_size=2048, shuffle=True, pin_memory=False)
     model = FastMLP(input_dim).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=2e-3, weight_decay=1e-3)
     criterion = nn.CrossEntropyLoss()
