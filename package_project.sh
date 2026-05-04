@@ -15,10 +15,9 @@ find . -name "*.npy" > files_to_zip.txt
 echo "Collecting plots..."
 find . -name "*.png" >> files_to_zip.txt
 
-# 3. Collect specific synthetic token stores
-# (We exclude real data HDF5s to keep the size manageable if needed,
-# but include synthetic ones as requested)
-echo "Collecting synthetic HDF5 stores..."
+# 3. Collect token stores (Real and Synthetic)
+echo "Collecting HDF5 stores..."
+find . -name "token_store.hdf5" >> files_to_zip.txt
 find . -name "synthetic_tokens.hdf5" >> files_to_zip.txt
 find . -name "synthetic_waveforms.hdf5" >> files_to_zip.txt
 

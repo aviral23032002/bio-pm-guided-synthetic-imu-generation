@@ -4,8 +4,8 @@ evaluate_augmented.py — Compare real-only vs real+synthetic HAR classifier.
 
 WHAT THIS DOES:
     Runs LOSO cross-validation with TWO conditions:
-      [A] Real-only:  train on real 64-d token features
-      [B] Augmented:  train on real + synthetic 64-d token features (CAR-IMU)
+      [A] Real-only:  train on real 192-d token features (mean + std + gravity)
+      [B] Augmented:  train on real + synthetic 192-d token features (CAR-IMU)
 
     Collects per-class F1 inside the LOSO loop (single pass, no redundancy).
 
@@ -18,10 +18,21 @@ import argparse
 import warnings
 import numpy as np
 import h5py
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
 from sklearn.linear_model import LogisticRegression
-from sklearn.neural_network import MLPClassifier
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import f1_score
+
+# ── Device Detection ──────────────────────────────────────────────────────────
+def get_device():
+    if torch.backends.mps.is_available() and torch.backends.mps.is_built():
+        return torch.device("mps")
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
+DEVICE = get_device()
 
 # Suppress sklearn numerical warnings — the results are still valid
 warnings.filterwarnings("ignore", category=RuntimeWarning)
@@ -54,26 +65,147 @@ def sanitize_features(feats: np.ndarray, name: str = "") -> np.ndarray:
 
 def load_real_tokens(path: str):
     with h5py.File(path, "r") as f:
-        features    = f["mean_tokens"][:].astype(np.float32)   # (N, 64)
+        # 1. Load tokens (N, 192, 64) — NOT mean_tokens
+        tokens      = f["tokens"][:].astype(np.float32)
         labels      = f["labels"][:].astype(int)
         subject_ids = f["subject_ids"][:].astype(int)
+        
+        # 2. Load gravity_vecs (N, 64)
+        if "gravity_vecs" in f:
+            gravity_vecs = f["gravity_vecs"][:].astype(np.float32)
+            has_gravity = True
+        else:
+            print("  ⚠ ERROR: gravity_vecs not found in token_store.hdf5.")
+            print("     Run week1_analysis.py with gravity extraction enabled first.")
+            print("     Falling back to 128-d features (mean + std only).")
+            gravity_vecs = None
+            has_gravity = False
+
+    # 4 & 5. Compute mean and std features → (N, 64)
+    mean_feats = tokens.mean(axis=1)
+    std_feats  = tokens.std(axis=1)
+
+    # 6. Concatenate: features = np.concatenate([mean_feats, std_feats, gravity_vecs], axis=1)
+    if has_gravity:
+        features = np.concatenate([mean_feats, std_feats, gravity_vecs], axis=1)
+    else:
+        features = np.concatenate([mean_feats, std_feats], axis=1)
+
+    # 7. Sanitize
     features = sanitize_features(features, "real tokens")
-    print(f"  Real tokens:  {features.shape}  subjects: {np.unique(subject_ids).tolist()}")
-    return features, labels, subject_ids
+    
+    # 8. Print stats
+    dim = features.shape[1]
+    print(f"  Real tokens:  {features.shape} ({dim}-d) subjects: {np.unique(subject_ids).tolist()}")
+    
+    # 9 & 10. Return
+    return features, labels, subject_ids, gravity_vecs
 
 
-def load_synthetic_tokens(path: str):
+def load_synthetic_tokens(path: str, real_gravity: np.ndarray, real_labels: np.ndarray):
     with h5py.File(path, "r") as f:
-        features = f["mean_tokens"][:].astype(np.float32)   # (N_syn, 64)
-        labels   = f["labels"][:].astype(int)
+        # 1. Load tokens (N, 192, 64)
+        tokens = f["tokens"][:].astype(np.float32)
+        labels = f["labels"][:].astype(int)
+
+    # 3 & 4. Compute mean and std features → (N, 64)
+    mean_feats = tokens.mean(axis=1)
+    std_feats  = tokens.std(axis=1)
+
+    # 5. Compute class-mean gravity from real data:
+    if real_gravity is not None:
+        class_gravity = {}
+        for cls_id in range(NUM_CLASSES):
+            mask = real_labels == cls_id
+            if mask.sum() > 0:
+                class_gravity[cls_id] = real_gravity[mask].mean(axis=0)  # (64,)
+            else:
+                class_gravity[cls_id] = np.zeros(64, dtype=np.float32)
+
+        # 6. Assign class-mean gravity to each synthetic sample:
+        syn_gravity = np.stack([class_gravity[cls_id] for cls_id in labels])
+        # 7. Concatenate (192-d)
+        features = np.concatenate([mean_feats, std_feats, syn_gravity], axis=1)
+    else:
+        # Fallback (128-d)
+        features = np.concatenate([mean_feats, std_feats], axis=1)
+
+    # 8. Sanitize
     features = sanitize_features(features, "synthetic tokens")
-    print(f"  Synthetic:    {features.shape}")
+    
+    # 9. Print stats
+    print(f"  Synthetic:    {features.shape} ({features.shape[1]}-d)")
     for cls_id in range(NUM_CLASSES):
         n = (labels == cls_id).sum()
         if n > 0:
             print(f"    {ACTIVITY_NAMES[cls_id]:<12} +{n}")
+            
+    # 10. Return
     return features, labels
 
+
+
+# ── Torch MLP Implementation ──────────────────────────────────────────────────
+class TorchMLP(nn.Module):
+    def __init__(self, input_dim, num_classes=6):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, 128), nn.ReLU(), nn.Dropout(0.2),
+            nn.Linear(128, 64),        nn.ReLU(), nn.Dropout(0.2),
+            nn.Linear(64, num_classes)
+        )
+    def forward(self, x):
+        return self.net(x)
+
+def train_torch_mlp(X_train, y_train, X_test, device,
+                    num_classes=6, epochs=200, patience=15):
+    # Sklearn-style early stopping: split 10% for validation
+    n_val  = max(1, int(len(X_train) * 0.1))
+    X_tr, y_tr = X_train[:-n_val], y_train[:-n_val]
+    X_va, y_va = X_train[-n_val:], y_train[-n_val:]
+
+    to_t = lambda x, dtype: torch.tensor(x, dtype=dtype).to(device)
+    Xtr_t, ytr_t = to_t(X_tr, torch.float32), to_t(y_tr, torch.long)
+    Xva_t, yva_t = to_t(X_va, torch.float32), to_t(y_va, torch.long)
+    Xte_t        = to_t(X_test, torch.float32)
+
+    loader    = DataLoader(TensorDataset(Xtr_t, ytr_t),
+                           batch_size=64, shuffle=True)
+    model     = TorchMLP(X_train.shape[1], num_classes).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3,
+                                 weight_decay=1e-4)
+    criterion = nn.CrossEntropyLoss()
+
+    best_loss, best_state, no_improve = float("inf"), None, 0
+    for epoch in range(epochs):
+        model.train()
+        for Xb, yb in loader:
+            optimizer.zero_grad()
+            criterion(model(Xb), yb).backward()
+            optimizer.step()
+        
+        # Early stopping check
+        model.eval()
+        with torch.no_grad():
+            val_loss = criterion(model(Xva_t), yva_t).item()
+        
+        if val_loss < best_loss:
+            best_loss  = val_loss
+            best_state = {k: v.cpu().clone()
+                          for k, v in model.state_dict().items()}
+            no_improve = 0
+        else:
+            no_improve += 1
+            if no_improve >= patience:
+                break
+
+    # Load best and predict
+    model.load_state_dict({k: v.to(device)
+                           for k, v in best_state.items()})
+    model.eval()
+    with torch.no_grad():
+        logits = model(Xte_t)
+        return logits.argmax(dim=1).cpu().numpy()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -152,19 +284,11 @@ def run_loso_both_conditions(
         f1_lr_a   = f1_score(y_te, pred_lr_a, average="macro", zero_division=0)
 
 
-        # ── MLP ──────────────────────────────────────────────────────────────
-        mlp_r = MLPClassifier(hidden_layer_sizes=(128, 64), max_iter=500,
-                               random_state=42, early_stopping=True,
-                               validation_fraction=0.1, n_iter_no_change=15)
-        mlp_r.fit(X_tr_r_sc, y_tr_r)
-        pred_mlp_r = mlp_r.predict(X_te_r)
+        # ── MLP (PyTorch on MPS) ─────────────────────────────────────────────
+        pred_mlp_r = train_torch_mlp(X_tr_r_sc, y_tr_r, X_te_r, DEVICE)
         f1_mlp_r   = f1_score(y_te, pred_mlp_r, average="macro", zero_division=0)
 
-        mlp_a = MLPClassifier(hidden_layer_sizes=(128, 64), max_iter=500,
-                               random_state=42, early_stopping=True,
-                               validation_fraction=0.1, n_iter_no_change=15)
-        mlp_a.fit(X_tr_a_sc, y_tr_a)
-        pred_mlp_a = mlp_a.predict(X_te_a)
+        pred_mlp_a = train_torch_mlp(X_tr_a_sc, y_tr_a, X_te_a, DEVICE)
         f1_mlp_a   = f1_score(y_te, pred_mlp_a, average="macro", zero_division=0)
 
         # ── Collect ───────────────────────────────────────────────────────────
@@ -210,16 +334,18 @@ def main():
     args = parse_args()
     os.makedirs(args.out_dir, exist_ok=True)
 
-    print("=" * 65)
+    print("\n" + "=" * 65)
     print("CAR-IMU — Augmented HAR Evaluation")
+    print(f"Device: {DEVICE}")
     print("=" * 65)
 
     # ── Load ──────────────────────────────────────────────────────────────────
     print("\nLoading data ...")
-    real_feats, real_labels, real_pids = load_real_tokens(args.real_tokens)
+    real_feats, real_labels, real_pids, real_gravity = load_real_tokens(args.real_tokens)
 
     if os.path.exists(args.syn_tokens):
-        syn_feats, syn_labels = load_synthetic_tokens(args.syn_tokens)
+        syn_feats, syn_labels = load_synthetic_tokens(
+            args.syn_tokens, real_gravity, real_labels)
     else:
         print(f"  ⚠ Not found: {args.syn_tokens} — running real-only.")
         syn_feats, syn_labels = None, None
@@ -234,6 +360,9 @@ def main():
     print("\n" + "=" * 65)
     print("RESULTS SUMMARY")
     print("=" * 65)
+    print(f"  Feature vector: mean(64) + std(64) + gravity(64) = 192-d")
+    print(f"  Gravity source: Bio-PM encoder_gravity (real=encoded, synthetic=class-mean)")
+
     print(f"\n  {'Condition':<40} {'LR F1':>8} {'MLP F1':>8}")
     print("  " + "-" * 58)
     print(f"  {'[REF] Week1 real-only 1028-d baseline':<40} {'0.691':>8} {'0.689':>8}")
@@ -243,8 +372,10 @@ def main():
     a_lr  = res["macro_aug_lr"].mean()
     a_mlp = res["macro_aug_mlp"].mean()
 
-    print(f"  {'[A] Real only  (64-d tokens, LOSO)':<40} {r_lr:>8.3f} {r_mlp:>8.3f}")
-    print(f"  {'[B] Real+Synth (64-d tokens, LOSO)':<40} {a_lr:>8.3f} {a_mlp:>8.3f}")
+    # Determine dimensionality for label
+    dim = real_feats.shape[1]
+    print(f"  {'[A] Real only  ('+str(dim)+'-d tokens, LOSO)':<40} {r_lr:>8.3f} {r_mlp:>8.3f}")
+    print(f"  {'[B] Real+Synth ('+str(dim)+'-d tokens, LOSO)':<40} {a_lr:>8.3f} {a_mlp:>8.3f}")
 
     d_lr  = a_lr  - r_lr
     d_mlp = a_mlp - r_mlp
