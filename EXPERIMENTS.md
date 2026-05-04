@@ -14,13 +14,23 @@ This document tracks the different strategies, hyperparameter settings, and eval
 
 ---
 
-## 📈 Visualizing Fidelity (Trial 3: Calibrated)
+## 📉 Visualizing Progression: Before vs. After Calibration
 
-The calibration step ensures that synthetic tokens reside within the same manifold as the real tokens.
+### 1. Before Calibration (Trial 1 & 2)
+In the early trials, the synthetic tokens (hollow circles) showed a noticeable **mean shift** relative to the real data clusters. This shift contributed to the drop in downstream HAR performance.
 
-### T-SNE Overlay (Calibrated)
-![T-SNE Overlay](full_pipeline_report_calibrated/pipeline_tsne_overlay.png)
-*Figure 1: T-SNE distribution of real vs. calibrated synthetic tokens across all 6 classes.*
+![T-SNE Before](full_pipeline_report/pipeline_tsne_overlay.png)
+*Figure 1: T-SNE before calibration. Note the partial separation between synthetic and real clusters.*
+
+### 2. After Calibration (Trial 3)
+The calibration step (matching per-class mean/std) forced the synthetic tokens into the correct feature-space distribution.
+
+![T-SNE After](full_pipeline_report_calibrated/pipeline_tsne_overlay.png)
+*Figure 2: T-SNE after calibration. Clusters now overlap significantly, indicating higher domain fidelity.*
+
+---
+
+## 📈 Detailed Fidelity Analysis (Calibrated)
 
 ### UMAP Overlay (Calibrated)
 ![UMAP Overlay](full_pipeline_report_calibrated/pipeline_umap_overlay.png)
