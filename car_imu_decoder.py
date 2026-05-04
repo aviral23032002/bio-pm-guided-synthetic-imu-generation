@@ -57,9 +57,9 @@ import torch.nn.functional as F
 # ── Constants matching Bio-PM token space ─────────────────────────────────────
 TOKEN_DIM    = 64    # D: Bio-PM encoder output dimension per token
 SEQ_LEN      = 192   # L: number of tokens per window (from preprocessing)
-NUM_CLASSES  = 6     # WISDM: Walking, Jogging, Upstairs, Downstairs, Sitting, Standing
+NUM_CLASSES  = 6     
 ACTIVITY_NAMES = {
-    0: "Walking", 1: "Jogging", 2: "Upstairs",
+    0: "Walking", 1: "Jogging", 2: "Upstairs", 
     3: "Downstairs", 4: "Sitting", 5: "Standing"
 }
 

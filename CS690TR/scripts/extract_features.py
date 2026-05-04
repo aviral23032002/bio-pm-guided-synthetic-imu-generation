@@ -57,7 +57,7 @@ def parse_args():
     p.add_argument("--batch_size", type=int, default=32,
                    help="Batch size for inference (default: 32)")
     p.add_argument("--device", type=str, default="cpu",
-                   choices=["cpu", "cuda"],
+                   choices=["cpu", "cuda", "mps", "auto"],
                    help="Device for inference (default: cpu)")
     return p.parse_args()
 

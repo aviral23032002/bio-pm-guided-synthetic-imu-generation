@@ -122,13 +122,25 @@ def compute_generation_counts(
             gen_counts[cls_id] = needed
 
     elif strategy == "ratio":
-        print(f"\n  Strategy: add {syn_ratio:.0%} synthetic for minority classes")
+        print(f"\n  Strategy: add {syn_ratio:.0%} synthetic for ALL classes")
+        for cls_id in range(NUM_CLASSES):
+            gen_counts[cls_id] = int(counts[cls_id] * syn_ratio)
+
+    elif strategy == "minority_ratio":
+        print(f"\n  Strategy: add {syn_ratio:.0%} synthetic for MINORITY classes only")
         for cls_id in range(NUM_CLASSES):
             pct = counts[cls_id] / total
-            if pct < 0.10:   # only minority classes
+            if pct < 0.18:   # Targets Upstairs, Downstairs, Sitting, Standing
                 gen_counts[cls_id] = int(counts[cls_id] * syn_ratio)
             else:
                 gen_counts[cls_id] = 0
+                
+    elif strategy == "balance":
+        # Target = syn_ratio used as a fixed count per class
+        target_count = int(syn_ratio)
+        print(f"\n  Strategy: balance (generating {target_count} synthetic per class)")
+        for cls_id in range(NUM_CLASSES):
+            gen_counts[cls_id] = target_count
 
     print(f"\n  Synthetic windows to generate:")
     total_gen = 0
@@ -255,6 +267,29 @@ def quality_check(
         assessment = "✅ Good" if cos_sim > 0.85 else ("⚠️  Moderate" if cos_sim > 0.6 else "❌ Poor")
         print(f"  {ACTIVITY_NAMES[cls_id]:<12} {cos_sim:>10.4f} {l2_dist:>10.4f}  {assessment}")
 
+def calibrate_tokens(real_tokens, real_labels, syn_tokens, syn_labels):
+    """Force synthetic tokens to match the exact mean/std of real tokens PER CLASS."""
+    print("\n  Calibrating synthetic tokens per-class...")
+    calibrated = syn_tokens.copy()
+    
+    for cls_id in range(6):
+        m_r = real_labels == cls_id
+        m_s = syn_labels == cls_id
+        
+        if m_r.sum() > 10 and m_s.sum() > 10:
+            # Stats for THIS class only
+            r_mean = real_tokens[m_r].mean(axis=(0, 1))
+            r_std  = real_tokens[m_r].std(axis=(0, 1)) + 1e-8
+            
+            s_mean = syn_tokens[m_s].mean(axis=(0, 1))
+            s_std  = syn_tokens[m_s].std(axis=(0, 1)) + 1e-8
+            
+            # Calibrate this class
+            cls_syn = (syn_tokens[m_s] - s_mean) / s_std
+            calibrated[m_s] = (cls_syn * r_std) + r_mean
+            
+    return calibrated.astype(np.float32)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # SAVE SYNTHETIC TOKEN STORE
@@ -303,10 +338,10 @@ def parse_args():
     p.add_argument("--temperature",  type=float, default=0.5,
                    help="Sampling noise: 0=greedy, 0.5=recommended, 1.0=max")
     p.add_argument("--strategy",     type=str, default="upsample",
-                   choices=["upsample", "ratio"],
-                   help="upsample=match majority class; ratio=add fixed %")
+                   choices=["upsample", "ratio", "minority_ratio", "balance"],
+                   help="upsample=match majority; ratio=all classes; minority_ratio=only imbalanced; balance=fixed count")
     p.add_argument("--syn_ratio",    type=float, default=0.5,
-                   help="Used only with strategy=ratio. E.g. 0.5 = add 50% more")
+                   help="Ratio if strategy=ratio, or fixed count if strategy=balance. E.g. 5000")
     p.add_argument("--device",       type=str, default="auto",
                    choices=["auto", "mps", "cuda", "cpu"])
     p.add_argument("--batch_size",   type=int, default=32)
@@ -361,6 +396,9 @@ def main():
 
     syn_tokens = np.concatenate(all_syn_tokens, axis=0)  # (N_syn, 192, 64)
     syn_labels = np.concatenate(all_syn_labels, axis=0)  # (N_syn,)
+
+    # ── Token Calibration ─────────────────────────────────────────────────────
+    syn_tokens = calibrate_tokens(real_tokens, real_labels, syn_tokens, syn_labels)
 
     # ── Quality check ─────────────────────────────────────────────────────────
     quality_check(real_tokens, real_labels, syn_tokens, syn_labels)

@@ -168,7 +168,7 @@ Each window produces a 1028-dimensional feature vector:
 |-----------|--------|-------------|
 | `[0:64]` | encoder_acc → mean pool | Mean of 64-d transformer tokens over valid patches |
 | `[64:128]` | encoder_acc → std pool | Std of 64-d transformer tokens over valid patches |
-| `[128:1028]` | gravity signal | Raw gravity interpolated to 300×3, flattened to 900 |
+| `[128:1028]` | gravity signal | Raw gravity i~nterpolated to 300×3, flattened to 900 |
 
 ### Why These Features?
 

@@ -55,7 +55,7 @@ ACTIVITY_COLORS = {
     0: "#4361ee",   # blue
     1: "#f72585",   # pink
     2: "#7209b7",   # purple
-    3: "#3a86ff",   # light blue
+    3: "#b5179e",   # dark purple
     4: "#fb8500",   # orange
     5: "#06d6a0",   # teal
 }
@@ -376,8 +376,7 @@ def baseline_har_classifier(features_path: str, out_dir: str):
         X_te = scaler.transform(X_te)
 
         # Linear probe
-        lr = LogisticRegression(C=1.0, max_iter=1000, solver='lbfgs',
-                                 multi_class='multinomial')
+        lr = LogisticRegression(C=1.0, max_iter=1000, solver='lbfgs')
         lr.fit(X_tr, y_tr)
         lr_f1 = f1_score(y_te, lr.predict(X_te), average='macro')
 
@@ -395,7 +394,7 @@ def baseline_har_classifier(features_path: str, out_dir: str):
         print(f"\n  Per-class report (MLP):")
         print(classification_report(
             y_te, mlp.predict(X_te),
-            target_names=[ACTIVITY_NAMES.get(i, str(i)) for i in range(6)],
+            target_names=[ACTIVITY_NAMES.get(i, str(i)) for i in range(5)],
             zero_division=0))
 
         results = {"linear_f1": float(lr_f1), "mlp_f1": float(mlp_f1),
@@ -408,8 +407,7 @@ def baseline_har_classifier(features_path: str, out_dir: str):
             X_tr = scaler.fit_transform(X[tr_i])
             X_te = scaler.transform(X[te_i])
 
-            lr = LogisticRegression(C=1.0, max_iter=1000, solver='lbfgs',
-                                     multi_class='multinomial')
+            lr = LogisticRegression(C=1.0, max_iter=1000, solver='lbfgs')
             lr.fit(X_tr, y[tr_i])
             lr_f1s.append(f1_score(y[te_i], lr.predict(X_te),
                                     average='macro', zero_division=0))
