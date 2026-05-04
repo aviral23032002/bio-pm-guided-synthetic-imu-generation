@@ -96,7 +96,7 @@ def load_real_tokens(path: str):
     
     # 8. Print stats
     dim = features.shape[1]
-    print(f"  Real tokens:  {features.shape} ({dim}-d) subjects: {np.unique(subject_ids).tolist()}")
+    print(f"  Real tokens:  {features.shape} ({dim}-d) subjects: {len(np.unique(subject_ids))} found")
     
     # 9 & 10. Return
     return features, labels, subject_ids, gravity_vecs
@@ -169,8 +169,9 @@ def train_torch_mlp(X_train, y_train, X_test, device,
     Xva_t, yva_t = to_t(X_va, torch.float32), to_t(y_va, torch.long)
     Xte_t        = to_t(X_test, torch.float32)
 
+    # Batch size 128 is better for MPS
     loader    = DataLoader(TensorDataset(Xtr_t, ytr_t),
-                           batch_size=64, shuffle=True)
+                           batch_size=128, shuffle=True)
     model     = TorchMLP(X_train.shape[1], num_classes).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3,
                                  weight_decay=1e-4)
@@ -259,7 +260,6 @@ def run_loso_both_conditions(
             X_tr_a, y_tr_a = X_tr_r, y_tr_r
 
         # ── Normalise — fit ONLY on real train data, apply everywhere ────────
-        # Fitting on synthetic too would corrupt the scaler with outliers.
         sc = StandardScaler()
         sc.fit(X_tr_r)                          # fit on real only
         X_tr_r_sc = sc.transform(X_tr_r)
@@ -284,7 +284,7 @@ def run_loso_both_conditions(
         f1_lr_a   = f1_score(y_te, pred_lr_a, average="macro", zero_division=0)
 
 
-        # ── MLP (PyTorch on MPS) ─────────────────────────────────────────────
+        # ── MLP (PyTorch on GPU/MPS) ─────────────────────────────────────────────
         pred_mlp_r = train_torch_mlp(X_tr_r_sc, y_tr_r, X_te_r, DEVICE)
         f1_mlp_r   = f1_score(y_te, pred_mlp_r, average="macro", zero_division=0)
 
@@ -391,20 +391,8 @@ def main():
         vals_a = res["per_class_aug"][cls_id]
         r = np.mean(vals_r) if vals_r else float("nan")
         a = np.mean(vals_a) if vals_a else float("nan")
-        d = a - r
         minority = " ← minority" if cls_id in [2, 3, 4, 5] else ""
-        print(f"  {ACTIVITY_NAMES[cls_id]:<14} {r:>12.3f} {a:>12.3f} {d:>+8.3f}{minority}")
-
-    # ── Verdict ───────────────────────────────────────────────────────────────
-    print("\n" + "=" * 65)
-    if d_mlp > 0.01:
-        print(f"  ✅ CAR-IMU augmentation HELPS!  MLP Macro-F1 {d_mlp:+.3f}")
-    elif d_mlp > -0.01:
-        print(f"  ➡️  CAR-IMU augmentation NEUTRAL  (Δ={d_mlp:+.3f})")
-    else:
-        print(f"  ⚠️  CAR-IMU augmentation HURTS  (Δ={d_mlp:+.3f})")
-        print(f"       → Try: python generate_synthetic.py --temperature 0.3")
-    print("=" * 65)
+        print(f"  {ACTIVITY_NAMES[cls_id]:<14} {r:>12.3f} {a:>12.3f} {a-r:>+8.3f}{minority}")
 
     # ── Save ──────────────────────────────────────────────────────────────────
     save_path = os.path.join(args.out_dir, "augmented_results.npy")
