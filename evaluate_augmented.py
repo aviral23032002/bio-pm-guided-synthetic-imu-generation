@@ -24,6 +24,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import f1_score
+from joblib import Parallel, delayed
 
 # ── Device Detection ──────────────────────────────────────────────────────────
 def get_device():
@@ -81,15 +82,33 @@ def load_real_tokens(path: str):
             gravity_vecs = None
             has_gravity = False
 
-    # 4 & 5. Compute mean and std features → (N, 64)
-    mean_feats = tokens.mean(axis=1)
-    std_feats  = tokens.std(axis=1)
-
-    # 6. Concatenate: features = np.concatenate([mean_feats, std_feats, gravity_vecs], axis=1)
-    if has_gravity:
-        features = np.concatenate([mean_feats, std_feats, gravity_vecs], axis=1)
+    # Verify interleaving before computing
+    n_x = tokens[:, 0::3, :].shape[1]
+    n_y = tokens[:, 1::3, :].shape[1]
+    n_z = tokens[:, 2::3, :].shape[1]
+    print(f"  Axis token counts — x:{n_x} y:{n_y} z:{n_z} (total={n_x+n_y+n_z})")
+    
+    if not (n_x == n_y == n_z):
+        print("  ⚠ Unequal axis counts — falling back to global mean (192-d)")
+        mean_feats = tokens.mean(axis=1)
+        std_feats  = tokens.std(axis=1)
+        if has_gravity:
+            features = np.concatenate([mean_feats, std_feats, gravity_vecs], axis=1)
+        else:
+            features = np.concatenate([mean_feats, std_feats], axis=1)
     else:
-        features = np.concatenate([mean_feats, std_feats], axis=1)
+        mean_x    = tokens[:, 0::3, :].mean(axis=1)   # (N, 64)
+        mean_y    = tokens[:, 1::3, :].mean(axis=1)   # (N, 64)
+        mean_z    = tokens[:, 2::3, :].mean(axis=1)   # (N, 64)
+        std_feats = tokens.std(axis=1)                 # (N, 64)
+        if has_gravity:
+            features  = np.concatenate([
+                mean_x, mean_y, mean_z, std_feats, gravity_vecs
+            ], axis=1)   # (N, 320)
+        else:
+            features  = np.concatenate([
+                mean_x, mean_y, mean_z, std_feats
+            ], axis=1)   # (N, 256)
 
     # 7. Sanitize
     features = sanitize_features(features, "real tokens")
@@ -108,9 +127,10 @@ def load_synthetic_tokens(path: str, real_gravity: np.ndarray, real_labels: np.n
         tokens = f["tokens"][:].astype(np.float32)
         labels = f["labels"][:].astype(int)
 
-    # 3 & 4. Compute mean and std features → (N, 64)
-    mean_feats = tokens.mean(axis=1)
-    std_feats  = tokens.std(axis=1)
+    mean_x    = tokens[:, 0::3, :].mean(axis=1)
+    mean_y    = tokens[:, 1::3, :].mean(axis=1)
+    mean_z    = tokens[:, 2::3, :].mean(axis=1)
+    std_feats = tokens.std(axis=1)
 
     # 5. Compute class-mean gravity from real data:
     if real_gravity is not None:
@@ -124,11 +144,15 @@ def load_synthetic_tokens(path: str, real_gravity: np.ndarray, real_labels: np.n
 
         # 6. Assign class-mean gravity to each synthetic sample:
         syn_gravity = np.stack([class_gravity[cls_id] for cls_id in labels])
-        # 7. Concatenate (192-d)
-        features = np.concatenate([mean_feats, std_feats, syn_gravity], axis=1)
+        # 7. Concatenate (320-d)
+        features  = np.concatenate([
+            mean_x, mean_y, mean_z, std_feats, syn_gravity
+        ], axis=1)   # (N, 320)
     else:
-        # Fallback (128-d)
-        features = np.concatenate([mean_feats, std_feats], axis=1)
+        # Fallback (256-d)
+        features  = np.concatenate([
+            mean_x, mean_y, mean_z, std_feats
+        ], axis=1)   # (N, 256)
 
     # 8. Sanitize
     features = sanitize_features(features, "synthetic tokens")
@@ -150,46 +174,69 @@ class TorchMLP(nn.Module):
     def __init__(self, input_dim, num_classes=6):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(input_dim, 128), nn.ReLU(), nn.Dropout(0.2),
-            nn.Linear(128, 64),        nn.ReLU(), nn.Dropout(0.2),
+            nn.Linear(input_dim, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(256, 128),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.Dropout(0.2),
+            nn.Linear(128, 64),
+            nn.ReLU(),
             nn.Linear(64, num_classes)
         )
     def forward(self, x):
         return self.net(x)
 
 def train_torch_mlp(X_train, y_train, X_test, device,
-                    num_classes=6, epochs=200, patience=15):
-    # Sklearn-style early stopping: split 10% for validation
-    n_val  = max(1, int(len(X_train) * 0.1))
+                    num_classes=6, epochs=150, patience=10,
+                    batch_size=256, lr=1e-3):
+    # Train/val split
+    n_val    = max(1, int(len(X_train) * 0.1))
     X_tr, y_tr = X_train[:-n_val], y_train[:-n_val]
     X_va, y_va = X_train[-n_val:], y_train[-n_val:]
 
-    to_t = lambda x, dtype: torch.tensor(x, dtype=dtype).to(device)
-    Xtr_t, ytr_t = to_t(X_tr, torch.float32), to_t(y_tr, torch.long)
-    Xva_t, yva_t = to_t(X_va, torch.float32), to_t(y_va, torch.long)
-    Xte_t        = to_t(X_test, torch.float32)
+    # Tensors
+    def to_t(x, dtype):
+        return torch.tensor(x, dtype=dtype).to(device)
 
-    # Batch size 128 is better for MPS
-    loader    = DataLoader(TensorDataset(Xtr_t, ytr_t),
-                           batch_size=128, shuffle=True)
+    Xtr_t = to_t(X_tr,   torch.float32)
+    ytr_t = to_t(y_tr,   torch.long)
+    Xva_t = to_t(X_va,   torch.float32)
+    yva_t = to_t(y_va,   torch.long)
+    Xte_t = to_t(X_test, torch.float32)
+
+    # DataLoader
+    loader = DataLoader(
+        TensorDataset(Xtr_t, ytr_t),
+        batch_size=batch_size,
+        shuffle=True
+    )
+
+    # Model, optimizer, scheduler
     model     = TorchMLP(X_train.shape[1], num_classes).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-3,
-                                 weight_decay=1e-4)
+    optimizer = torch.optim.Adam(model.parameters(),
+                                 lr=lr, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                    optimizer, T_max=epochs)
     criterion = nn.CrossEntropyLoss()
 
+    # Training loop with early stopping
     best_loss, best_state, no_improve = float("inf"), None, 0
+
     for epoch in range(epochs):
         model.train()
         for Xb, yb in loader:
             optimizer.zero_grad()
             criterion(model(Xb), yb).backward()
             optimizer.step()
-        
-        # Early stopping check
+        scheduler.step()
+
         model.eval()
         with torch.no_grad():
             val_loss = criterion(model(Xva_t), yva_t).item()
-        
+
         if val_loss < best_loss:
             best_loss  = val_loss
             best_state = {k: v.cpu().clone()
@@ -200,123 +247,137 @@ def train_torch_mlp(X_train, y_train, X_test, device,
             if no_improve >= patience:
                 break
 
-    # Load best and predict
-    model.load_state_dict({k: v.to(device)
-                           for k, v in best_state.items()})
+    # Restore best and predict
+    model.load_state_dict(
+        {k: v.to(device) for k, v in best_state.items()})
     model.eval()
     with torch.no_grad():
-        logits = model(Xte_t)
-        return logits.argmax(dim=1).cpu().numpy()
+        return model(Xte_t).argmax(dim=1).cpu().numpy()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # LOSO — collects both macro-F1 and per-class F1 in a single pass
 # ══════════════════════════════════════════════════════════════════════════════
-def run_loso_both_conditions(
-    real_feats:  np.ndarray,
-    real_labels: np.ndarray,
-    real_pids:   np.ndarray,
-    syn_feats:   np.ndarray,
-    syn_labels:  np.ndarray,
-):
+def run_single_fold(fold, test_subj, real_feats, real_labels, real_pids,
+                    syn_feats, syn_labels, device, n_classes):
     """
-    One LOSO pass that simultaneously trains:
-      - Condition A: real only (MLP)
-      - Condition B: real + synthetic (MLP)
-      - Condition A: real only (Linear probe)
-      - Condition B: real + synthetic (Linear probe)
-
-    Returns:
-        results dict with macro-F1 and per-class F1 for both conditions.
+    Logic for a single LOSO fold.
     """
-    subjects = np.unique(real_pids)
-    n_classes = NUM_CLASSES
+    test_mask  = real_pids == test_subj
+    train_mask = ~test_mask
 
-    macro_real_lr,  macro_aug_lr  = [], []
-    macro_real_mlp, macro_aug_mlp = [], []
-    per_class_real  = {i: [] for i in range(n_classes)}
-    per_class_aug   = {i: [] for i in range(n_classes)}
+    X_tr_r = real_feats[train_mask]
+    y_tr_r = real_labels[train_mask]
+    X_te   = real_feats[test_mask]
+    y_te   = real_labels[test_mask]
 
     has_syn = syn_feats is not None and len(syn_feats) > 0
 
-    print(f"\n  LOSO ({len(subjects)} folds) ...")
+    # Augmented training set
+    if has_syn:
+        X_tr_a = np.concatenate([X_tr_r, syn_feats], axis=0)
+        y_tr_a = np.concatenate([y_tr_r, syn_labels], axis=0)
+    else:
+        X_tr_a, y_tr_a = X_tr_r, y_tr_r
+
+    # ── Normalise ────────
+    sc = StandardScaler()
+    sc.fit(X_tr_r)
+    X_tr_r_sc = sc.transform(X_tr_r)
+    X_te_r    = sc.transform(X_te)
+    X_tr_a_sc = sc.transform(X_tr_a)
+    X_te_a    = sc.transform(X_te)
+
+    X_tr_a_sc = np.clip(X_tr_a_sc, -10, 10)
+
+    # ── Linear probe (Logistic Regression) ────────
+    lr_r = LogisticRegression(max_iter=1000, C=1.0, solver="saga", random_state=42)
+    lr_r.fit(X_tr_r_sc, y_tr_r)
+    pred_lr_r = lr_r.predict(X_te_r)
+    f1_lr_r   = f1_score(y_te, pred_lr_r, average="macro", zero_division=0)
+
+    lr_a = LogisticRegression(max_iter=1000, C=1.0, solver="saga", random_state=42)
+    lr_a.fit(X_tr_a_sc, y_tr_a)
+    pred_lr_a = lr_a.predict(X_te_a)
+    f1_lr_a   = f1_score(y_te, pred_lr_a, average="macro", zero_division=0)
+
+    # ── MLP (PyTorch) ────────
+    # Re-detect device inside worker for safety with joblib/loky
+    if device.type == "mps" or device.type == "cuda":
+        worker_device = device
+    else:
+        worker_device = torch.device("cpu")
+
+    pred_mlp_r = train_torch_mlp(X_tr_r_sc, y_tr_r, X_te_r, worker_device, num_classes=n_classes)
+    f1_mlp_r   = f1_score(y_te, pred_mlp_r, average="macro", zero_division=0)
+
+    pred_mlp_a = train_torch_mlp(X_tr_a_sc, y_tr_a, X_te_a, worker_device, num_classes=n_classes)
+    f1_mlp_a   = f1_score(y_te, pred_mlp_a, average="macro", zero_division=0)
+
+    # Per-class F1 (MLP only)
+    fold_per_class_real = {}
+    fold_per_class_aug  = {}
+    for cls_id in range(n_classes):
+        if (y_te == cls_id).sum() > 0:
+            fold_per_class_real[cls_id] = f1_score(y_te == cls_id, pred_mlp_r == cls_id,
+                                                   average="binary", zero_division=0)
+            fold_per_class_aug[cls_id]  = f1_score(y_te == cls_id, pred_mlp_a == cls_id,
+                                                   average="binary", zero_division=0)
+        else:
+            fold_per_class_real[cls_id] = None
+            fold_per_class_aug[cls_id]  = None
+
+    print(f"  {fold+1:<5} {int(test_subj):<6} {f1_lr_r:>8.3f} {f1_mlp_r:>8.3f} {f1_lr_a:>8.3f} {f1_mlp_a:>8.3f}")
+
+    return {
+        "f1_lr_r": f1_lr_r, "f1_lr_a": f1_lr_a,
+        "f1_mlp_r": f1_mlp_r, "f1_mlp_a": f1_mlp_a,
+        "per_class_real": fold_per_class_real,
+        "per_class_aug": fold_per_class_aug
+    }
+
+def run_loso_both_conditions(
+    real_feats, real_labels, real_pids,
+    syn_feats, syn_labels,
+    device=None,
+):
+    if device is None:
+        device = get_device()
+
+    subjects = np.unique(real_pids)
+    n_classes = NUM_CLASSES
+
+    print(f"\n  LOSO ({len(subjects)} folds) Parallelized...")
     print(f"  {'Fold':<5} {'Subj':<6} {'A_LR':>8} {'A_MLP':>8} {'B_LR':>8} {'B_MLP':>8}")
     print("  " + "-" * 45)
 
-    for fold, test_subj in enumerate(subjects):
-        test_mask  = real_pids == test_subj
-        train_mask = ~test_mask
+    # Parallel execution across folds
+    fold_results = Parallel(n_jobs=-1)(
+        delayed(run_single_fold)(
+            fold, test_subj, real_feats, real_labels, real_pids,
+            syn_feats, syn_labels, device, n_classes
+        )
+        for fold, test_subj in enumerate(subjects)
+    )
 
-        X_tr_r = real_feats[train_mask]
-        y_tr_r = real_labels[train_mask]
-        X_te   = real_feats[test_mask]
-        y_te   = real_labels[test_mask]
-
-        # Augmented training set
-        if has_syn:
-            X_tr_a = np.concatenate([X_tr_r, syn_feats], axis=0)
-            y_tr_a = np.concatenate([y_tr_r, syn_labels], axis=0)
-        else:
-            X_tr_a, y_tr_a = X_tr_r, y_tr_r
-
-        # ── Normalise — fit ONLY on real train data, apply everywhere ────────
-        sc = StandardScaler()
-        sc.fit(X_tr_r)                          # fit on real only
-        X_tr_r_sc = sc.transform(X_tr_r)
-        X_te_r    = sc.transform(X_te)
-        X_tr_a_sc = sc.transform(X_tr_a)        # same scaler for augmented
-        X_te_a    = sc.transform(X_te)
-
-        # Clip after scaling to remove any residual outliers (>10σ = noise)
-        X_tr_a_sc = np.clip(X_tr_a_sc, -10, 10)
-
-        # ── Linear probe ─────────────────────────────────────────────────────
-        lr_r = LogisticRegression(max_iter=1000, C=1.0, solver="saga",
-                                  random_state=42)
-        lr_r.fit(X_tr_r_sc, y_tr_r)
-        pred_lr_r = lr_r.predict(X_te_r)
-        f1_lr_r   = f1_score(y_te, pred_lr_r, average="macro", zero_division=0)
-
-        lr_a = LogisticRegression(max_iter=1000, C=1.0, solver="saga",
-                                  random_state=42)
-        lr_a.fit(X_tr_a_sc, y_tr_a)
-        pred_lr_a = lr_a.predict(X_te_a)
-        f1_lr_a   = f1_score(y_te, pred_lr_a, average="macro", zero_division=0)
-
-
-        # ── MLP (PyTorch on GPU/MPS) ─────────────────────────────────────────────
-        pred_mlp_r = train_torch_mlp(X_tr_r_sc, y_tr_r, X_te_r, DEVICE)
-        f1_mlp_r   = f1_score(y_te, pred_mlp_r, average="macro", zero_division=0)
-
-        pred_mlp_a = train_torch_mlp(X_tr_a_sc, y_tr_a, X_te_a, DEVICE)
-        f1_mlp_a   = f1_score(y_te, pred_mlp_a, average="macro", zero_division=0)
-
-        # ── Collect ───────────────────────────────────────────────────────────
-        macro_real_lr.append(f1_lr_r);  macro_aug_lr.append(f1_lr_a)
-        macro_real_mlp.append(f1_mlp_r); macro_aug_mlp.append(f1_mlp_a)
-
-        # Per-class F1 (MLP only)
-        for cls_id in range(n_classes):
-            if (y_te == cls_id).sum() > 0:
-                per_class_real[cls_id].append(
-                    f1_score(y_te == cls_id, pred_mlp_r == cls_id,
-                             average="binary", zero_division=0))
-                per_class_aug[cls_id].append(
-                    f1_score(y_te == cls_id, pred_mlp_a == cls_id,
-                             average="binary", zero_division=0))
-
-        print(f"  {fold+1:<5} {int(test_subj):<6} "
-              f"{f1_lr_r:>8.3f} {f1_mlp_r:>8.3f} "
-              f"{f1_lr_a:>8.3f} {f1_mlp_a:>8.3f}")
-
-    return {
-        "macro_real_lr":   np.array(macro_real_lr),
-        "macro_aug_lr":    np.array(macro_aug_lr),
-        "macro_real_mlp":  np.array(macro_real_mlp),
-        "macro_aug_mlp":   np.array(macro_aug_mlp),
-        "per_class_real":  per_class_real,
-        "per_class_aug":   per_class_aug,
+    # Aggregate results
+    res = {
+        "macro_real_lr":   np.array([r["f1_lr_r"] for r in fold_results]),
+        "macro_aug_lr":    np.array([r["f1_lr_a"] for r in fold_results]),
+        "macro_real_mlp":  np.array([r["f1_mlp_r"] for r in fold_results]),
+        "macro_aug_mlp":   np.array([r["f1_mlp_a"] for r in fold_results]),
+        "per_class_real":  {i: [] for i in range(n_classes)},
+        "per_class_aug":   {i: [] for i in range(n_classes)},
     }
+
+    for r in fold_results:
+        for cls_id in range(n_classes):
+            if r["per_class_real"][cls_id] is not None:
+                res["per_class_real"][cls_id].append(r["per_class_real"][cls_id])
+            if r["per_class_aug"][cls_id] is not None:
+                res["per_class_aug"][cls_id].append(r["per_class_aug"][cls_id])
+
+    return res
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -353,15 +414,17 @@ def main():
     # ── Run LOSO (single pass, both conditions) ───────────────────────────────
     res = run_loso_both_conditions(
         real_feats, real_labels, real_pids,
-        syn_feats, syn_labels
+        syn_feats, syn_labels,
+        device=DEVICE,
     )
 
     # ── Summary table ─────────────────────────────────────────────────────────
     print("\n" + "=" * 65)
     print("RESULTS SUMMARY")
     print("=" * 65)
-    print(f"  Feature vector: mean(64) + std(64) + gravity(64) = 192-d")
-    print(f"  Gravity source: Bio-PM encoder_gravity (real=encoded, synthetic=class-mean)")
+    print("  Feature: mean_x(64)+mean_y(64)+mean_z(64)+std(64)+gravity(64) = 320-d")
+    print("  Pooling: axis-wise (0::3, 1::3, 2::3) + global std")
+    print(f"  Device:  {DEVICE}")
 
     print(f"\n  {'Condition':<40} {'LR F1':>8} {'MLP F1':>8}")
     print("  " + "-" * 58)
