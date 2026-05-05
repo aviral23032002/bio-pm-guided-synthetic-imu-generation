@@ -354,8 +354,8 @@ def run_loso_both_conditions(
     print(f"  {'Fold':<5} {'Subj':<6} {'A_LR':>8} {'A_MLP':>8} {'B_LR':>8} {'B_MLP':>8}")
     print("  " + "-" * 45)
 
-    # Parallel execution across folds
-    fold_results = Parallel(n_jobs=-1)(
+    # Parallel execution across folds (threading is faster for MPS than loky/processes)
+    fold_results = Parallel(n_jobs=4, backend="threading", verbose=10)(
         delayed(run_single_fold)(
             fold, test_subj, real_feats, real_labels, real_pids,
             syn_feats, syn_labels, device, n_classes
