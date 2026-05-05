@@ -12,6 +12,53 @@ This document tracks the different strategies, hyperparameter settings, and eval
 | **3** | **Calibrated Tokens** | **Yes** | 0.3 | **Highest Fidelity.** Alignment of mean/std between real/synthetic tokens improved cluster overlap. |
 | **4** | **Gravity-Aware Recon** | Yes | 0.3 | Successfully reconstructed total acceleration waveforms using class-mean gravity vectors. |
 | **5** | **Axis-Mean-Pool** | **Yes** | 0.1 | **Macro-F1: 0.778** (Aug). Shifted to 320-d features (mean x/y/z pooled separately). Massive jump in baseline (0.781) and augmented (0.778) scores. |
+| **6** | **Confusion-Aware** | **Yes** | 0.3 | **Macro-F1: 0.768** (Aug). **Δ = +0.011**. Filtered Upstairs vs Walking and Downstairs vs Sitting. First strategy to show clear F1 gain in the 320-d space. |
+
+---
+
+## 🧠 Confusion-Aware Generation (Strategy Details)
+
+"Confusion-Aware" generation is a two-stage strategy designed to improve the quality of synthetic data for the hardest classes by ensuring they don't overlap with their most common "confusers."
+
+### 1. How Minority Classes are Chosen
+Unlike simple upsampling, this strategy selects targets based on:
+- **Imbalance**: Only classes representing < 18% of the dataset are considered.
+- **Difficulty**: The number of synthetic samples generated is proportional to the **inverse F1 score** (1.0 - F1) of the class in real-only baseline tests. 
+- **Focus**: In Trial 6, we focused exclusively on **Upstairs** (Hardest) and **Downstairs** (Second hardest).
+
+### 2. The Confusion Filter
+Before saving, every synthetic token sequence is converted to a 320-d feature vector and compared against the **real centroid** of its confuser class:
+- **Upstairs (Class 2)** sequences are discarded if Cosine Similarity > 0.85 vs. **Walking**.
+- **Downstairs (Class 3)** sequences are discarded if Cosine Similarity > 0.85 vs. **Sitting**.
+
+### 3. Technical Implementation Details
+- **Dynamic Scaling**: The volume of synthetic data is adaptive. We use the formula `N_syn = N_real * (1.0 - Baseline_F1) * Minority_Ratio`. This concentrates the augmentation budget on the classes where the classifier is most "confused" in the real-only baseline.
+- **One-Pass Filtering**: The current implementation follows a "generate-then-filter" workflow. It does not iteratively regenerate until a quota is met; instead, it relies on high-quality initial generation to maintain a high "Pass Rate" (typically > 95%).
+- **Space Consistency**: Filtering is performed in the exact **320-d axis-mean-pool space** used by the downstream HAR classifier, ensuring that "domain fidelity" is measured using the same features the model sees.
+
+---
+
+## 📈 Confusion-Aware Results (Temp 0.3, 320-d)
+
+### LOSO Performance (Macro-F1)
+| Condition | LR F1 | MLP F1 |
+|---|---|---|
+| [REF] Week 1 Baseline (1028-d) | 0.691 | 0.689 |
+| **[A] Real Only (320-d tokens)** | **—** | **0.758** |
+| **[B] Real + Synthetic (320-d tokens)** | **—** | **0.768** |
+| **Δ = [B] - [A]** | **—** | **+0.011** |
+
+### Per-Class Analysis (MLP, Confusion-Aware)
+| Activity | Real Only | Augmented | Δ |
+|---|---|---|---|
+| Walking | 0.614 | 0.636 | +0.022 |
+| Jogging | 0.970 | 0.971 | +0.001 |
+| Upstairs | 0.669 | 0.687 | +0.019 ← minority |
+| Downstairs | 0.693 | 0.688 | -0.005 ← minority |
+| Sitting | 0.784 | 0.802 | +0.017 ← minority |
+| Standing | 0.847 | 0.857 | +0.010 ← minority |
+
+---
 
 ---
 

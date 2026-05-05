@@ -122,49 +122,45 @@ def load_real_tokens(path: str):
 
 
 def load_synthetic_tokens(path: str, real_gravity: np.ndarray, real_labels: np.ndarray):
+    """
+    Load synthetic tokens and compute features.
+    If 'gravity_vecs' is available in the HDF5 (confusion_aware), load it directly.
+    Otherwise fall back to class-mean gravity from real data.
+    """
     with h5py.File(path, "r") as f:
-        # 1. Load tokens (N, 192, 64)
-        tokens = f["tokens"][:].astype(np.float32)
+        tokens = f["tokens"][:]              # (N, 192, 64)
         labels = f["labels"][:].astype(int)
 
-    mean_x    = tokens[:, 0::3, :].mean(axis=1)
-    mean_y    = tokens[:, 1::3, :].mean(axis=1)
-    mean_z    = tokens[:, 2::3, :].mean(axis=1)
-    std_feats = tokens.std(axis=1)
+        # Load gravity directly if saved (confusion_aware strategy)
+        if "gravity_vecs" in f:
+            gravity = f["gravity_vecs"][:]   # (N, 64)
+            print("  Synthetic gravity: loaded from file (per-token)")
+        else:
+            # Fall back to class-mean gravity from real data
+            gravity = np.stack([
+                real_gravity[real_labels == lbl].mean(axis=0)
+                for lbl in labels
+            ])   # (N, 64)
+            print("  Synthetic gravity: class-mean from real data (fallback)")
 
-    # 5. Compute class-mean gravity from real data:
-    if real_gravity is not None:
-        class_gravity = {}
-        for cls_id in range(NUM_CLASSES):
-            mask = real_labels == cls_id
-            if mask.sum() > 0:
-                class_gravity[cls_id] = real_gravity[mask].mean(axis=0)  # (64,)
-            else:
-                class_gravity[cls_id] = np.zeros(64, dtype=np.float32)
+    # Compute 320-d axis-wise features
+    mean_x    = tokens[:, 0::3, :].mean(axis=1)   # (N, 64)
+    mean_y    = tokens[:, 1::3, :].mean(axis=1)   # (N, 64)
+    mean_z    = tokens[:, 2::3, :].mean(axis=1)   # (N, 64)
+    std_feats = tokens.std(axis=1)                 # (N, 64)
 
-        # 6. Assign class-mean gravity to each synthetic sample:
-        syn_gravity = np.stack([class_gravity[cls_id] for cls_id in labels])
-        # 7. Concatenate (320-d)
-        features  = np.concatenate([
-            mean_x, mean_y, mean_z, std_feats, syn_gravity
-        ], axis=1)   # (N, 320)
-    else:
-        # Fallback (256-d)
-        features  = np.concatenate([
-            mean_x, mean_y, mean_z, std_feats
-        ], axis=1)   # (N, 256)
+    features = np.concatenate([
+        mean_x, mean_y, mean_z, std_feats, gravity
+    ], axis=1)   # (N, 320)
 
-    # 8. Sanitize
     features = sanitize_features(features, "synthetic tokens")
-    
-    # 9. Print stats
-    print(f"  Synthetic:    {features.shape} ({features.shape[1]}-d)")
+
+    print(f"  Synthetic:    {features.shape}")
     for cls_id in range(NUM_CLASSES):
         n = (labels == cls_id).sum()
         if n > 0:
             print(f"    {ACTIVITY_NAMES[cls_id]:<12} +{n}")
-            
-    # 10. Return
+
     return features, labels
 
 
@@ -190,8 +186,8 @@ class TorchMLP(nn.Module):
         return self.net(x)
 
 def train_torch_mlp(X_train, y_train, X_test, device,
-                    num_classes=6, epochs=150, patience=10,
-                    batch_size=256, lr=1e-3):
+                    num_classes=6, epochs=100, patience=7,
+                    batch_size=2048, lr=1e-3):
     # Train/val split
     n_val    = max(1, int(len(X_train) * 0.1))
     X_tr, y_tr = X_train[:-n_val], y_train[:-n_val]
@@ -258,129 +254,162 @@ def train_torch_mlp(X_train, y_train, X_test, device,
 # ══════════════════════════════════════════════════════════════════════════════
 # LOSO — collects both macro-F1 and per-class F1 in a single pass
 # ══════════════════════════════════════════════════════════════════════════════
-def run_single_fold(fold, test_subj, real_feats, real_labels, real_pids,
-                    syn_feats, syn_labels, device, n_classes):
-    """
-    Logic for a single LOSO fold.
-    """
-    import warnings
-    from sklearn.exceptions import ConvergenceWarning
-    warnings.filterwarnings("ignore", category=ConvergenceWarning)
+def run_single_fold(
+    fold, test_subj, real_feats, real_labels, real_pids,
+    syn_feats, syn_labels, device, n_classes,
+    run_lr=True, run_mlp=True, batch_size=2048, epochs=100
+):
     test_mask  = real_pids == test_subj
     train_mask = ~test_mask
 
-    X_tr_r = real_feats[train_mask]
-    y_tr_r = real_labels[train_mask]
-    X_te   = real_feats[test_mask]
-    y_te   = real_labels[test_mask]
+    # Fold split
+    X_tr_r, y_tr_r = real_feats[train_mask], real_labels[train_mask]
+    X_te,   y_te   = real_feats[test_mask],  real_labels[test_mask]
 
-    has_syn = syn_feats is not None and len(syn_feats) > 0
+    # Combined training set (Augmented)
+    X_tr_a = np.concatenate([X_tr_r, syn_feats], axis=0)
+    y_tr_a = np.concatenate([y_tr_r, syn_labels], axis=0)
 
-    # Augmented training set
-    if has_syn:
-        X_tr_a = np.concatenate([X_tr_r, syn_feats], axis=0)
-        y_tr_a = np.concatenate([y_tr_r, syn_labels], axis=0)
-    else:
-        X_tr_a, y_tr_a = X_tr_r, y_tr_r
-
-    # ── Normalise ────────
-    sc = StandardScaler()
-    sc.fit(X_tr_r)
+    # Scaler (fit on real data only to avoid leakage)
+    sc = StandardScaler().fit(X_tr_r)
     X_tr_r_sc = sc.transform(X_tr_r)
-    X_te_r    = sc.transform(X_te)
     X_tr_a_sc = sc.transform(X_tr_a)
-    X_te_a    = sc.transform(X_te)
+    X_te_sc   = sc.transform(X_te)
 
-    X_tr_a_sc = np.clip(X_tr_a_sc, -10, 10)
+    # ── Linear probe ─────────────────────────────────────────────
+    if run_lr:
+        lr_r = LogisticRegression(max_iter=1000, C=1.0,
+                                  solver="saga", random_state=42)
+        lr_r.fit(X_tr_r_sc, y_tr_r)
+        pred_lr_r = lr_r.predict(X_te_sc)
+        f1_lr_r   = f1_score(y_te, pred_lr_r,
+                             average="macro", zero_division=0)
 
-    # ── Linear probe (Logistic Regression) ────────
-    lr_r = LogisticRegression(max_iter=1000, C=1.0, solver="saga", random_state=42)
-    lr_r.fit(X_tr_r_sc, y_tr_r)
-    pred_lr_r = lr_r.predict(X_te_r)
-    f1_lr_r   = f1_score(y_te, pred_lr_r, average="macro", zero_division=0)
-
-    lr_a = LogisticRegression(max_iter=1000, C=1.0, solver="saga", random_state=42)
-    lr_a.fit(X_tr_a_sc, y_tr_a)
-    pred_lr_a = lr_a.predict(X_te_a)
-    f1_lr_a   = f1_score(y_te, pred_lr_a, average="macro", zero_division=0)
-
-    # ── MLP (PyTorch) ────────
-    # Re-detect device inside worker for safety with joblib/loky
-    if device.type == "mps" or device.type == "cuda":
-        worker_device = device
+        lr_a = LogisticRegression(max_iter=1000, C=1.0,
+                                  solver="saga", random_state=42)
+        lr_a.fit(X_tr_a_sc, y_tr_a)
+        pred_lr_a = lr_a.predict(X_te_sc)
+        f1_lr_a   = f1_score(y_te, pred_lr_a,
+                             average="macro", zero_division=0)
     else:
-        worker_device = torch.device("cpu")
+        f1_lr_r = f1_lr_a = float("nan")
+        pred_lr_r = pred_lr_a = np.zeros_like(y_te)
 
-    pred_mlp_r = train_torch_mlp(X_tr_r_sc, y_tr_r, X_te_r, worker_device, num_classes=n_classes)
-    f1_mlp_r   = f1_score(y_te, pred_mlp_r, average="macro", zero_division=0)
+    # ── MLP ──────────────────────────────────────────────────────
+    if run_mlp:
+        pred_mlp_r = train_torch_mlp(
+            X_tr_r_sc, y_tr_r, X_te_sc,
+            device, num_classes=NUM_CLASSES,
+            batch_size=batch_size, epochs=epochs)
+        f1_mlp_r = f1_score(y_te, pred_mlp_r,
+                            average="macro", zero_division=0)
 
-    pred_mlp_a = train_torch_mlp(X_tr_a_sc, y_tr_a, X_te_a, worker_device, num_classes=n_classes)
-    f1_mlp_a   = f1_score(y_te, pred_mlp_a, average="macro", zero_division=0)
+        pred_mlp_a = train_torch_mlp(
+            X_tr_a_sc, y_tr_a, X_te_sc,
+            device, num_classes=NUM_CLASSES,
+            batch_size=batch_size, epochs=epochs)
+        f1_mlp_a = f1_score(y_te, pred_mlp_a,
+                            average="macro", zero_division=0)
+    else:
+        f1_mlp_r = f1_mlp_a = float("nan")
+        pred_mlp_r = pred_mlp_a = np.zeros_like(y_te)
 
-    # Per-class F1 (MLP only)
-    fold_per_class_real = {}
-    fold_per_class_aug  = {}
+    # Per-class F1
+    active_pred_r = pred_mlp_r if run_mlp else pred_lr_r
+    active_pred_a = pred_mlp_a if run_mlp else pred_lr_a
+
+    per_class_real = {}
+    per_class_aug  = {}
     for cls_id in range(n_classes):
         if (y_te == cls_id).sum() > 0:
-            fold_per_class_real[cls_id] = f1_score(y_te == cls_id, pred_mlp_r == cls_id,
-                                                   average="binary", zero_division=0)
-            fold_per_class_aug[cls_id]  = f1_score(y_te == cls_id, pred_mlp_a == cls_id,
-                                                   average="binary", zero_division=0)
-        else:
-            fold_per_class_real[cls_id] = None
-            fold_per_class_aug[cls_id]  = None
-
-    print(f"  {fold+1:<5} {int(test_subj):<6} {f1_lr_r:>8.3f} {f1_mlp_r:>8.3f} {f1_lr_a:>8.3f} {f1_mlp_a:>8.3f}")
+            per_class_real[cls_id] = f1_score(y_te == cls_id,
+                                             active_pred_r == cls_id,
+                                             average="binary", zero_division=0)
+            per_class_aug[cls_id]  = f1_score(y_te == cls_id,
+                                             active_pred_a == cls_id,
+                                             average="binary", zero_division=0)
 
     return {
+        "fold": fold,
+        "test_subj": test_subj,
         "f1_lr_r": f1_lr_r, "f1_lr_a": f1_lr_a,
         "f1_mlp_r": f1_mlp_r, "f1_mlp_a": f1_mlp_a,
-        "per_class_real": fold_per_class_real,
-        "per_class_aug": fold_per_class_aug
+        "per_class_real": per_class_real,
+        "per_class_aug":  per_class_aug,
     }
+
 
 def run_loso_both_conditions(
     real_feats, real_labels, real_pids,
     syn_feats, syn_labels,
     device=None,
+    run_lr=True,
+    run_mlp=True,
+    n_jobs=16,
+    batch_size=4096,
+    epochs=50
 ):
-    if device is None:
-        device = get_device()
-
+    """
+    Perform Leave-One-Subject-Out cross validation across 2 conditions.
+    """
     subjects = np.unique(real_pids)
     n_classes = NUM_CLASSES
 
-    print(f"\n  LOSO ({len(subjects)} folds) Parallelized...")
-    print(f"  {'Fold':<5} {'Subj':<6} {'A_LR':>8} {'A_MLP':>8} {'B_LR':>8} {'B_MLP':>8}")
-    print("  " + "-" * 45)
+    header = f"  {'Fold':<5} {'Subj':<6}"
+    if run_lr:
+        header += f" {'A_LR':>8} {'B_LR':>8}"
+    if run_mlp:
+        header += f" {'A_MLP':>8} {'B_MLP':>8}"
+    print(header)
+    print("  " + "-" * len(header.rstrip()))
 
-    # Parallel execution across folds (threading is faster for MPS than loky/processes)
-    fold_results = Parallel(n_jobs=4, backend="threading", verbose=10)(
+    # Parallel execution across folds (threading is faster for MPS than loky)
+    fold_results = Parallel(n_jobs=n_jobs, backend="threading", verbose=10)(
         delayed(run_single_fold)(
             fold, test_subj, real_feats, real_labels, real_pids,
-            syn_feats, syn_labels, device, n_classes
+            syn_feats, syn_labels, device, n_classes,
+            run_lr=run_lr, run_mlp=run_mlp, batch_size=batch_size, epochs=epochs
         )
         for fold, test_subj in enumerate(subjects)
     )
 
-    # Aggregate results
-    res = {
-        "macro_real_lr":   np.array([r["f1_lr_r"] for r in fold_results]),
-        "macro_aug_lr":    np.array([r["f1_lr_a"] for r in fold_results]),
-        "macro_real_mlp":  np.array([r["f1_mlp_r"] for r in fold_results]),
-        "macro_aug_mlp":   np.array([r["f1_mlp_a"] for r in fold_results]),
-        "per_class_real":  {i: [] for i in range(n_classes)},
-        "per_class_aug":   {i: [] for i in range(n_classes)},
-    }
+    # Reconstruct results arrays
+    macro_real_lr = np.array([r["f1_lr_r"] for r in fold_results])
+    macro_aug_lr  = np.array([r["f1_lr_a"] for r in fold_results])
+    macro_real_mlp = np.array([r["f1_mlp_r"] for r in fold_results])
+    macro_aug_mlp  = np.array([r["f1_mlp_a"] for r in fold_results])
 
+    per_class_real = {c: [] for c in range(n_classes)}
+    per_class_aug  = {c: [] for c in range(n_classes)}
+    
+    # Sort results by fold ID for clean printing
+    fold_results = sorted(fold_results, key=lambda x: x["fold"])
+    
     for r in fold_results:
-        for cls_id in range(n_classes):
-            if r["per_class_real"][cls_id] is not None:
-                res["per_class_real"][cls_id].append(r["per_class_real"][cls_id])
-            if r["per_class_aug"][cls_id] is not None:
-                res["per_class_aug"][cls_id].append(r["per_class_aug"][cls_id])
+        # Print fold summary
+        fold_str = f"  {r['fold']+1:<5} {int(r['test_subj']):<6}"
+        if run_lr:
+            fold_str += f" {r['f1_lr_r']:>8.3f} {r['f1_lr_a']:>8.3f}"
+        if run_mlp:
+            fold_str += f" {r['f1_mlp_r']:>8.3f} {r['f1_mlp_a']:>8.3f}"
+        print(fold_str)
 
-    return res
+        # Collect per-class
+        for cls_id in range(n_classes):
+            if cls_id in r["per_class_real"]:
+                per_class_real[cls_id].append(r["per_class_real"][cls_id])
+                per_class_aug[cls_id].append(r["per_class_aug"][cls_id])
+
+    return {
+        "macro_real_lr":  macro_real_lr,
+        "macro_aug_lr":   macro_aug_lr,
+        "macro_real_mlp": macro_real_mlp,
+        "macro_aug_mlp":  macro_aug_mlp,
+        "per_class_real": per_class_real,
+        "per_class_aug":  per_class_aug,
+        "run_lr":         run_lr,
+        "run_mlp":        run_mlp,
+    }
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -390,7 +419,12 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--real_tokens", default="results_week1/token_store.hdf5")
     p.add_argument("--syn_tokens",  default="synthetic_tokens/synthetic_tokens.hdf5")
-    p.add_argument("--out_dir",     default="results_week2")
+    p.add_argument("--out_dir",     default="results_aug")
+    p.add_argument("--classifier", type=str, default="both",
+                   choices=["lr", "mlp", "both"],
+                   help="Which classifier(s) to run: 'lr' = LogisticRegression only, 'mlp' = PyTorch MLP only, 'both' = run both (default)")
+    p.add_argument("--batch_size", type=int, default=2048)
+    p.add_argument("--epochs", type=int, default=100)
     return p.parse_args()
 
 
@@ -414,11 +448,20 @@ def main():
         print(f"  ⚠ Not found: {args.syn_tokens} — running real-only.")
         syn_feats, syn_labels = None, None
 
-    # ── Run LOSO (single pass, both conditions) ───────────────────────────────
+    # ── Run Evaluation ────────────────────────────────────────────────────────
+    run_lr  = args.classifier in ["lr",  "both"]
+    run_mlp = args.classifier in ["mlp", "both"]
+
+    print(f"  Classifiers: {args.classifier.upper()}")
+
     res = run_loso_both_conditions(
         real_feats, real_labels, real_pids,
         syn_feats, syn_labels,
         device=DEVICE,
+        run_lr=run_lr,
+        run_mlp=run_mlp,
+        batch_size=args.batch_size,
+        epochs=args.epochs
     )
 
     # ── Summary table ─────────────────────────────────────────────────────────
@@ -429,26 +472,31 @@ def main():
     print("  Pooling: axis-wise (0::3, 1::3, 2::3) + global std")
     print(f"  Device:  {DEVICE}")
 
-    print(f"\n  {'Condition':<40} {'LR F1':>8} {'MLP F1':>8}")
-    print("  " + "-" * 58)
-    print(f"  {'[REF] Week1 real-only 1028-d baseline':<40} {'0.691':>8} {'0.689':>8}")
-
     r_lr  = res["macro_real_lr"].mean()
     r_mlp = res["macro_real_mlp"].mean()
     a_lr  = res["macro_aug_lr"].mean()
     a_mlp = res["macro_aug_mlp"].mean()
 
-    # Determine dimensionality for label
-    dim = real_feats.shape[1]
-    print(f"  {'[A] Real only  ('+str(dim)+'-d tokens, LOSO)':<40} {r_lr:>8.3f} {r_mlp:>8.3f}")
-    print(f"  {'[B] Real+Synth ('+str(dim)+'-d tokens, LOSO)':<40} {a_lr:>8.3f} {a_mlp:>8.3f}")
+    # Format values — show "  —  " for inactive classifiers
+    def fmt(val, active):
+        return f"{val:>8.3f}" if active else f"{'—':>8}"
+
+    run_lr  = res["run_lr"]
+    run_mlp = res["run_mlp"]
+
+    print(f"  {'Condition':<40} {'LR F1':>8} {'MLP F1':>8}")
+    print("  " + "-" * 58)
+    print(f"  {'[REF] Week1 real-only 1028-d baseline':<40} {'0.691':>8} {'0.689':>8}")
+    print(f"  {'[A] Real only  (320-d tokens, LOSO)':<40} {fmt(r_lr, run_lr)} {fmt(r_mlp, run_mlp)}")
+    print(f"  {'[B] Real+Synth (320-d tokens, LOSO)':<40} {fmt(a_lr, run_lr)} {fmt(a_mlp, run_mlp)}")
 
     d_lr  = a_lr  - r_lr
     d_mlp = a_mlp - r_mlp
-    print(f"  {'Δ = [B] - [A]':<40} {d_lr:>+8.3f} {d_mlp:>+8.3f}")
+    print(f"  {'Δ = [B] - [A]':<40} {fmt(d_lr, run_lr)} {fmt(d_mlp, run_mlp)}")
 
-    # ── Per-class F1 (MLP) ────────────────────────────────────────────────────
-    print(f"\n  Per-class F1  (MLP, LOSO mean):")
+    # ── Per-class F1 (MLP or LR) ──────────────────────────────────────────────
+    primary_name = "MLP" if run_mlp else "LR"
+    print(f"\n  Per-class F1  ({primary_name}, LOSO mean):")
     print(f"  {'Class':<14} {'Real only':>12} {'Augmented':>12} {'Δ':>8}  ")
     print("  " + "-" * 52)
 
@@ -460,9 +508,20 @@ def main():
         minority = " ← minority" if cls_id in [2, 3, 4, 5] else ""
         print(f"  {ACTIVITY_NAMES[cls_id]:<14} {r:>12.3f} {a:>12.3f} {a-r:>+8.3f}{minority}")
 
+    # ── Verdict ───────────────────────────────────────────────────────────────
+    primary_delta = d_mlp if run_mlp else d_lr
+    print("\n  Verdict:")
+    if primary_delta > 0.01:
+        print(f"  ✅ Augmentation HELPS  {primary_name} Macro-F1 {primary_delta:+.3f}")
+    elif primary_delta > -0.01:
+        print(f"  ➡️  Augmentation NEUTRAL (Δ={primary_delta:+.3f})")
+    else:
+        print(f"  ⚠️  Augmentation HURTS  (Δ={primary_delta:+.3f})")
+
     # ── Save ──────────────────────────────────────────────────────────────────
     save_path = os.path.join(args.out_dir, "augmented_results.npy")
     np.save(save_path, res, allow_pickle=True)
+    print(f"\n  Results saved to {save_path}")
     print(f"\n  Saved: {save_path}")
 
 
