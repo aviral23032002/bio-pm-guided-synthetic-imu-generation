@@ -133,6 +133,9 @@ def load_data(real_path, syn_path):
 
 def run_single_fold(fold, test_subj, real_feats, real_labels, real_pids,
                     syn_feats, syn_labels, device, n_classes, batch_size, epochs):
+    import warnings
+    from sklearn.exceptions import ConvergenceWarning
+    warnings.filterwarnings("ignore", category=ConvergenceWarning)
     test_mask = (real_pids == test_subj)
     train_mask = ~test_mask
     

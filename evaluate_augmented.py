@@ -263,6 +263,9 @@ def run_single_fold(fold, test_subj, real_feats, real_labels, real_pids,
     """
     Logic for a single LOSO fold.
     """
+    import warnings
+    from sklearn.exceptions import ConvergenceWarning
+    warnings.filterwarnings("ignore", category=ConvergenceWarning)
     test_mask  = real_pids == test_subj
     train_mask = ~test_mask
 
