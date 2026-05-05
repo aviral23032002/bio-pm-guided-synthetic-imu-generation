@@ -173,24 +173,72 @@ def decode(args):
     print(f"\n✅ Saved: {out_path}")
     print(f"   waveforms: {waveforms.shape}  (N, 300, 3)")
 
-    # Sanity plot
+    # ── Mega-Grid Plot: Real vs 20 Synthetic Samples ──────────────────────────
     try:
         import matplotlib.pyplot as plt
+        plots_dir = os.path.join(args.out_dir, "plots")
+        os.makedirs(plots_dir, exist_ok=True)
+        
+        print("Generating Real vs Synthetic comparison plot...")
+        # Load 1 real token per class
+        with h5py.File(args.real_tokens, "r") as f:
+            r_tok = f["tokens"][:]
+            r_lbl = f["labels"][:]
+            
+        real_recons = {}
+        for cls_id in range(6):
+            if (r_lbl == cls_id).sum() == 0: continue
+            sample_tok = r_tok[r_lbl == cls_id][0:1] # (1, 192, 64)
+            # normalize
+            sample_norm = (sample_tok - tok_mean[None, None, :]) / tok_std[None, None, :]
+            with torch.no_grad():
+                batch = torch.from_numpy(sample_norm.reshape(-1, 64)).to(device)
+                p_wav, p_ax, p_pos, p_dur = model(batch)
+            
+            p_wav = p_wav.cpu().numpy().reshape(1, 192, 32) * wav_std[None, None, :] + wav_mean[None, None, :]
+            p_ax = p_ax.argmax(1).cpu().numpy().reshape(1, 192)
+            p_pos = p_pos.cpu().numpy().reshape(1, 192)
+            p_dur = p_dur.cpu().numpy().reshape(1, 192) * dur_std + dur_mean
+            
+            w = stitch_patches(p_wav[0], p_ax[0], p_pos[0], p_dur[0], window_len=WINDOW_LEN)
+            if 'cls_grav_dc' in locals() and cls_id in cls_grav_dc:
+                w += cls_grav_dc[cls_id][None, :]
+            real_recons[cls_id] = w
+            
+        # Plotting
         unique_cls = sorted(np.unique(syn_labels))
-        fig, axes_plt = plt.subplots(len(unique_cls), 3,
-                                     figsize=(12, 2.5*len(unique_cls)))
-        if len(unique_cls) == 1: axes_plt = [axes_plt]
-        for row, cls_id in enumerate(unique_cls):
-            sample = waveforms[syn_labels == cls_id][0]
-            for col, ax_name in enumerate(["X", "Y", "Z"]):
-                axes_plt[row][col].plot(sample[:, col])
-                axes_plt[row][col].set_title(f"{ACTIVITY_NAMES[cls_id]} — {ax_name}")
-                axes_plt[row][col].grid(alpha=0.3)
-        plt.suptitle("Synthetic Waveforms (PatchDecoder)", fontsize=11)
+        fig, axes = plt.subplots(6, 21, figsize=(60, 15))
+        
+        for row, cls_id in enumerate(range(6)):
+            cls_name = ACTIVITY_NAMES.get(cls_id, f"Class_{cls_id}")
+            
+            # Plot Real Reconstructed in Column 0
+            ax = axes[row, 0]
+            if cls_id in real_recons:
+                w = real_recons[cls_id]
+                ax.plot(w[:, 0], color='r', alpha=0.8)
+                ax.plot(w[:, 1], color='g', alpha=0.8)
+                ax.plot(w[:, 2], color='b', alpha=0.8)
+            ax.set_title(f"REAL: {cls_name}")
+            ax.grid(alpha=0.3)
+            
+            # Plot 20 Synthetics in Columns 1-20
+            syn_samples = waveforms[syn_labels == cls_id][:20] if cls_id in unique_cls else []
+            for col in range(1, 21):
+                ax = axes[row, col]
+                if col - 1 < len(syn_samples):
+                    w = syn_samples[col - 1]
+                    ax.plot(w[:, 0], color='r', alpha=0.8)
+                    ax.plot(w[:, 1], color='g', alpha=0.8)
+                    ax.plot(w[:, 2], color='b', alpha=0.8)
+                    ax.set_title(f"SYN {col}: {cls_name}")
+                ax.grid(alpha=0.3)
+                
         plt.tight_layout()
-        plot_path = os.path.join(args.out_dir, "synthetic_waveforms_preview.png")
-        plt.savefig(plot_path, dpi=120)
-        print(f"   Preview: {plot_path}")
+        plot_path = os.path.join(plots_dir, "real_vs_synthetic_grid.png")
+        plt.savefig(plot_path, dpi=100)
+        plt.close(fig)
+        print(f"   Saved mega-grid plot to: {plot_path}")
     except Exception as e:
         print(f"  (Plot skipped: {e})")
 
@@ -199,6 +247,7 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--checkpoint",    default="decoder_checkpoints/patch_decoder_best.pt")
     p.add_argument("--syn_tokens",    default="synthetic_tokens/synthetic_tokens.hdf5")
+    p.add_argument("--real_tokens",   default="results_week1/token_store.hdf5")
     p.add_argument("--class_gravity", default="results_week1/class_gravity_means.npy")
     p.add_argument("--gravity_raw_dir", default="preprocessed_biopm")
     p.add_argument("--out_dir",       default="synthetic_waveforms")
