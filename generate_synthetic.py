@@ -291,6 +291,82 @@ def calibrate_tokens(real_tokens, real_labels, syn_tokens, syn_labels):
     return calibrated.astype(np.float32)
 
 
+def compute_320d_features(tokens: np.ndarray, gravity_vecs: np.ndarray) -> np.ndarray:
+    """
+    Convert (N, 192, 64) tokens + (N, 64) gravity to 320-d axis-wise pooled features.
+    Matches evaluate_augmented.py feature computation exactly.
+    """
+    # Axis-wise mean: tokens are (N, 192, 64)
+    # prepended [CLS] means 192 tokens. Preprocessing says 64 tokens per axis?
+    # Actually evaluate_augmented.py uses tokens[:, 0::3, :].mean(axis=1)
+    mean_x    = tokens[:, 0::3, :].mean(axis=1)   # (N, 64)
+    mean_y    = tokens[:, 1::3, :].mean(axis=1)   # (N, 64)
+    mean_z    = tokens[:, 2::3, :].mean(axis=1)   # (N, 64)
+    std_feats = tokens.std(axis=1)                 # (N, 64)
+    return np.concatenate([
+        mean_x, mean_y, mean_z, std_feats, gravity_vecs
+    ], axis=1)   # (N, 320)
+
+
+def filter_confused_synthetic(
+    syn_tokens:    np.ndarray,
+    syn_labels:    np.ndarray,
+    syn_gravity:   np.ndarray,
+    real_tokens:   np.ndarray,
+    real_labels:   np.ndarray,
+    real_gravity:  np.ndarray,
+    confusion_pairs: dict,
+    threshold: float = 0.85,
+) -> tuple:
+    """
+    Vectorized filter to remove synthetic tokens that are too similar to confuser centroids.
+    """
+    # Compute 320-d features for real tokens
+    real_feats = compute_320d_features(real_tokens, real_gravity)
+    all_syn_feats = compute_320d_features(syn_tokens, syn_gravity)
+
+    keep_mask = np.ones(len(syn_labels), dtype=bool)
+
+    for target_cls, confuser_cls in confusion_pairs.items():
+        target_mask = syn_labels == target_cls
+        if not target_mask.any():
+            continue
+
+        # Compute confuser centroid in 320-d space
+        conf_mask = real_labels == confuser_cls
+        if not conf_mask.any():
+            continue
+        conf_centroid = real_feats[conf_mask].mean(axis=0)
+        conf_centroid /= (np.linalg.norm(conf_centroid) + 1e-8)
+
+        # Compute similarities for ALL syn tokens of this target class
+        target_feats = all_syn_feats[target_mask]
+        target_feats_norm = target_feats / (np.linalg.norm(target_feats, axis=1, keepdims=True) + 1e-8)
+        
+        sims = target_feats_norm @ conf_centroid  # (N_target,)
+        
+        # Identify which ones to discard
+        discard_submask = sims >= threshold
+        
+        # Update global keep_mask
+        # target_mask is a boolean mask of length N_syn. 
+        # We need to map discard_submask (length N_target) back to N_syn.
+        idx_of_target = np.where(target_mask)[0]
+        idx_to_discard = idx_of_target[discard_submask]
+        keep_mask[idx_to_discard] = False
+
+        print(f"    {ACTIVITY_NAMES[target_cls]:<12} kept {sum(~discard_submask)}/{len(sims)} "
+              f"({100*sum(~discard_submask)/len(sims):.1f}% pass rate) "
+              f"discarded {sum(discard_submask)} vs {ACTIVITY_NAMES[confuser_cls]}")
+
+    if not keep_mask.any():
+        return (np.empty((0, syn_tokens.shape[1], syn_tokens.shape[2]), dtype=np.float32),
+                np.empty(0, dtype=int),
+                np.empty((0, syn_gravity.shape[1]), dtype=np.float32))
+
+    return (syn_tokens[keep_mask], syn_labels[keep_mask], syn_gravity[keep_mask])
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # SAVE SYNTHETIC TOKEN STORE
 # ══════════════════════════════════════════════════════════════════════════════
@@ -298,6 +374,7 @@ def save_synthetic(
     out_dir:    str,
     syn_tokens: np.ndarray,   # (N, 192, 64)
     syn_labels: np.ndarray,   # (N,)
+    syn_gravity: np.ndarray = None,
 ):
     """Save synthetic tokens in the same HDF5 format as token_store.hdf5."""
     os.makedirs(out_dir, exist_ok=True)
@@ -312,6 +389,11 @@ def save_synthetic(
         # Mark subject_ids as -1 to distinguish synthetic from real
         f.create_dataset("subject_ids", data=np.full(len(syn_labels), -1,
                                                       dtype=np.float32))
+        
+        grav_data = syn_gravity if syn_gravity is not None \
+                    else np.zeros((len(syn_tokens), 64), dtype=np.float32)
+        f.create_dataset("gravity_vecs", data=grav_data.astype(np.float32),
+                         compression="gzip")
 
     print(f"\n  Saved: {path}")
     print(f"    tokens:  {syn_tokens.shape}")
@@ -338,10 +420,14 @@ def parse_args():
     p.add_argument("--temperature",  type=float, default=0.5,
                    help="Sampling noise: 0=greedy, 0.5=recommended, 1.0=max")
     p.add_argument("--strategy",     type=str, default="upsample",
-                   choices=["upsample", "ratio", "minority_ratio", "balance"],
-                   help="upsample=match majority; ratio=all classes; minority_ratio=only imbalanced; balance=fixed count")
+                   choices=["upsample", "ratio", "minority_ratio", "balance", "confusion_aware"],
+                   help="upsample=match majority; ratio=all classes; minority_ratio=only imbalanced; balance=fixed count; confusion_aware: minority-only + confusion filtering")
     p.add_argument("--syn_ratio",    type=float, default=0.5,
                    help="Ratio if strategy=ratio, or fixed count if strategy=balance. E.g. 5000")
+    p.add_argument("--confusion_threshold", type=float, default=0.85,
+                   help="Cosine similarity threshold for confusion filter (default=0.85). Lower = stricter filtering.")
+    p.add_argument("--minority_ratio", type=float, default=0.10,
+                   help="Synthetic ratio for minority classes in confusion_aware mode (default=0.10 = 10%)")
     p.add_argument("--device",       type=str, default="auto",
                    choices=["auto", "mps", "cuda", "cpu"])
     p.add_argument("--batch_size",   type=int, default=32)
@@ -371,40 +457,134 @@ def main():
         real_labels = f["labels"][:].astype(int)
 
     # ── Compute how many synthetic to generate per class ─────────────────────
-    gen_counts = compute_generation_counts(real_labels, args.strategy, args.syn_ratio)
+    if args.strategy == "confusion_aware":
+        print(f"\n  Strategy: confusion_aware")
+        print(f"  Minority ratio:       {args.minority_ratio:.0%}")
+        print(f"  Confusion threshold:  {args.confusion_threshold}")
+        print(f"  Target classes:       Upstairs (2), Downstairs (3)")
+        print(f"  Confusion pairs:")
+        print(f"    Upstairs   → filter tokens similar to Walking")
+        print(f"    Downstairs → filter tokens similar to Sitting")
 
-    # ── Generate ──────────────────────────────────────────────────────────────
-    print(f"\nGenerating synthetic tokens (temperature={args.temperature}) ...")
-    all_syn_tokens = []
-    all_syn_labels = []
+        # Load gravity from token store for centroid computation
+        with h5py.File(args.token_store, "r") as f:
+            real_gravity = f["gravity_vecs"][:]   # (N_real, 64)
 
-    for cls_id in range(NUM_CLASSES):
-        n = gen_counts.get(cls_id, 0)
-        if n == 0:
-            continue
+        # Step 1 — Determine generation counts
+        # Only Upstairs (2) and Downstairs (3) get synthetic tokens
+        # Scaled by difficulty (inverse F1)
+        per_class_f1 = {
+            2: 0.600,   # Upstairs   — hardest minority
+            3: 0.686,   # Downstairs — second hardest
+        }
 
-        print(f"\n  [{ACTIVITY_NAMES[cls_id]}] generating {n} sequences ...")
-        syn = generate_for_class(
-            model, cls_id, n, args.temperature, device, args.batch_size)
+        gen_counts = {}
+        for cls_id in range(NUM_CLASSES):
+            if cls_id not in per_class_f1:
+                gen_counts[cls_id] = 0   # skip all other classes
+                continue
+            difficulty = 1.0 - per_class_f1[cls_id]
+            ratio      = difficulty * args.minority_ratio
+            n_real     = int((real_labels == cls_id).sum())
+            gen_counts[cls_id] = int(n_real * ratio)
 
-        all_syn_tokens.append(syn)
-        all_syn_labels.append(np.full(n, cls_id, dtype=int))
+        print(f"\n  Generation counts:")
+        for cls_id, n in gen_counts.items():
+            if n > 0:
+                print(f"    {ACTIVITY_NAMES[cls_id]:<12} +{n}")
 
-    if not all_syn_tokens:
-        print("Nothing to generate — all classes already balanced.")
-        return
+        # Step 2 — Generate raw synthetic tokens
+        print(f"\n  Generating raw synthetic tokens ...")
+        raw_syn_tokens, raw_syn_labels = [], []
 
-    syn_tokens = np.concatenate(all_syn_tokens, axis=0)  # (N_syn, 192, 64)
-    syn_labels = np.concatenate(all_syn_labels, axis=0)  # (N_syn,)
+        for cls_id in [2, 3]:   # Upstairs, Downstairs only
+            n = gen_counts[cls_id]
+            if n == 0: continue
+            print(f"\n  [{ACTIVITY_NAMES[cls_id]}] generating {n} sequences ...")
+            syn = generate_for_class(model, cls_id, n, args.temperature, device, args.batch_size)
+            raw_syn_tokens.append(syn)
+            raw_syn_labels.append(np.full(n, cls_id, dtype=int))
 
-    # ── Token Calibration ─────────────────────────────────────────────────────
-    syn_tokens = calibrate_tokens(real_tokens, real_labels, syn_tokens, syn_labels)
+        if not raw_syn_tokens:
+            print("  Nothing generated.")
+            return
 
-    # ── Quality check ─────────────────────────────────────────────────────────
-    quality_check(real_tokens, real_labels, syn_tokens, syn_labels)
+        raw_syn_tokens = np.concatenate(raw_syn_tokens, axis=0)
+        raw_syn_labels = np.concatenate(raw_syn_labels, axis=0)
+
+        # Step 3 — Assign class-mean gravity to synthetic tokens
+        raw_syn_gravity = np.stack([
+            real_gravity[real_labels == lbl].mean(axis=0)
+            for lbl in raw_syn_labels
+        ])   # (N_syn, 64)
+
+        # Step 4 — Apply confusion-aware filter
+        print(f"\n  Applying confusion-aware filter ...")
+        confusion_pairs = {
+            2: 0,   # Upstairs → filter vs Walking
+            3: 4,   # Downstairs → filter vs Sitting
+        }
+
+        syn_tokens, syn_labels, syn_gravity = filter_confused_synthetic(
+            syn_tokens    = raw_syn_tokens,
+            syn_labels    = raw_syn_labels,
+            syn_gravity   = raw_syn_gravity,
+            real_tokens   = real_tokens,
+            real_labels   = real_labels,
+            real_gravity  = real_gravity,
+            confusion_pairs = confusion_pairs,
+            threshold     = args.confusion_threshold,
+        )
+
+        # Step 5 — Standard quality check on filtered tokens
+        if len(syn_tokens) > 0:
+            quality_check(real_tokens, real_labels, syn_tokens, syn_labels)
+
+        # Step 6 — Save
+        all_syn_tokens = [syn_tokens]
+        all_syn_labels = [syn_labels]
+        # Calibration (optional, keep it consistent with other strategies)
+        # syn_tokens = calibrate_tokens(real_tokens, real_labels, syn_tokens, syn_labels)
+
+    else:
+        gen_counts = compute_generation_counts(real_labels, args.strategy, args.syn_ratio)
+        # ── Generate ──────────────────────────────────────────────────────────────
+        print(f"\nGenerating synthetic tokens (temperature={args.temperature}) ...")
+        all_syn_tokens = []
+        all_syn_labels = []
+
+        for cls_id in range(NUM_CLASSES):
+            n = gen_counts.get(cls_id, 0)
+            if n == 0: continue
+
+            print(f"\n  [{ACTIVITY_NAMES[cls_id]}] generating {n} sequences ...")
+            syn = generate_for_class(model, cls_id, n, args.temperature, device, args.batch_size)
+            all_syn_tokens.append(syn)
+            all_syn_labels.append(np.full(n, cls_id, dtype=int))
+
+        if not all_syn_tokens:
+            print("Nothing to generate — all classes already balanced.")
+            return
+
+        syn_tokens = np.concatenate(all_syn_tokens, axis=0)
+        syn_labels = np.concatenate(all_syn_labels, axis=0)
+        
+        # For non-confusion_aware, gravity will be placeholder in save_synthetic
+        syn_gravity = None 
+
+        # ── Token Calibration ─────────────────────────────────────────────────────
+        syn_tokens = calibrate_tokens(real_tokens, real_labels, syn_tokens, syn_labels)
+        
+        # ── Quality check ─────────────────────────────────────────────────────────
+        quality_check(real_tokens, real_labels, syn_tokens, syn_labels)
+
+        all_syn_tokens = [syn_tokens]
+        all_syn_labels = [syn_labels]
 
     # ── Save ──────────────────────────────────────────────────────────────────
-    syn_path = save_synthetic(args.out_dir, syn_tokens, syn_labels)
+    syn_tokens = np.concatenate(all_syn_tokens, axis=0)
+    syn_labels = np.concatenate(all_syn_labels, axis=0)
+    syn_path = save_synthetic(args.out_dir, syn_tokens, syn_labels, syn_gravity)
 
     # ── Print next step ───────────────────────────────────────────────────────
     print("\n" + "=" * 60)
