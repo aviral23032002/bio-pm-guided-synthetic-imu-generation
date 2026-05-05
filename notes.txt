@@ -324,3 +324,28 @@ Label counts:
   class 3: 994 windows
   class 4: 592 windows
   class 5: 471 windows
+
+
+
+
+
+
+
+
+
+
+
+
+
+python generate_synthetic.py --temperature 0.3
+
+
+
+  Quality Check — Real vs Synthetic Token Distributions:
+  Class           Cos Sim    L2 Dist Assessment
+  -------------------------------------------------------
+  Jogging          0.9556     1.8728  ✅ Good
+  Upstairs         0.9609     1.7168  ✅ Good
+  Downstairs       0.9654     1.6857  ✅ Good
+  Sitting          0.9401     2.4916  ✅ Good
+  Standing         0.9131     2.7019  ✅ Good
