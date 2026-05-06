@@ -39,6 +39,8 @@ import torch
 
 from car_imu_decoder import CARIMUDecoder, TOKEN_DIM, SEQ_LEN, NUM_CLASSES, ACTIVITY_NAMES
 
+MIN_QUALITY_THRESHOLD = 0.75
+
 
 # ── Device selection (same as train script) ────────────────────────────────────
 def get_best_device(requested: str = "auto") -> torch.device:
@@ -407,6 +409,72 @@ def save_synthetic(
     return path
 
 
+def apply_quality_gate(
+    syn_tokens:  np.ndarray,
+    syn_labels:  np.ndarray,
+    real_tokens: np.ndarray,
+    real_labels: np.ndarray,
+    min_quality: float = 0.75,
+) -> tuple:
+    """
+    Drops entire classes from synthetic set if their
+    cosine similarity to real class centroid is below
+    min_quality threshold.
+
+    Uses mean-pooled tokens for centroid computation.
+    Returns filtered (syn_tokens, syn_labels).
+    """
+    real_mean = real_tokens.mean(axis=1)   # (N_real, 64)
+    syn_mean  = syn_tokens.mean(axis=1)    # (N_syn, 64)
+
+    classes_in_syn = np.unique(syn_labels)
+    keep_mask = np.zeros(len(syn_labels), dtype=bool)
+
+    print(f"\n  Quality gate (min cos_sim={min_quality}):")
+    print(f"  {'Class':<12} {'Cos Sim':>10} {'Status':>15}")
+    print("  " + "-" * 42)
+
+    for cls_id in classes_in_syn:
+        real_mask = real_labels == cls_id
+        syn_mask  = syn_labels  == cls_id
+
+        if real_mask.sum() == 0 or syn_mask.sum() == 0:
+            continue
+
+        real_centroid = real_mean[real_mask].mean(axis=0)
+        syn_centroid  = syn_mean[syn_mask].mean(axis=0)
+
+        cos_sim = (
+            np.dot(real_centroid, syn_centroid) /
+            (np.linalg.norm(real_centroid) *
+             np.linalg.norm(syn_centroid) + 1e-8)
+        )
+
+        if cos_sim >= min_quality:
+            keep_mask[syn_mask] = True
+            status = "✅ KEEP"
+        else:
+            status = f"❌ DROP (< {min_quality})"
+
+        print(f"  {ACTIVITY_NAMES[cls_id]:<12} "
+              f"{cos_sim:>10.4f} {status:>15}")
+
+    filtered_tokens = syn_tokens[keep_mask]
+    filtered_labels = syn_labels[keep_mask]
+
+    dropped = [
+        ACTIVITY_NAMES[c] for c in classes_in_syn
+        if not keep_mask[syn_labels == c].any()
+    ]
+    if dropped:
+        print(f"\n  Dropped: {dropped}")
+        print(f"  Reason: cos_sim below {min_quality}")
+    else:
+        print(f"\n  All classes passed quality gate ✅")
+
+    return filtered_tokens, filtered_labels
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN
 # ══════════════════════════════════════════════════════════════════════════════
@@ -431,6 +499,12 @@ def parse_args():
     p.add_argument("--device",       type=str, default="auto",
                    choices=["auto", "mps", "cuda", "cpu"])
     p.add_argument("--batch_size",   type=int, default=32)
+    p.add_argument("--min_quality", type=float, default=0.75,
+                   help="Min cosine similarity after confusion "
+                        "filter to keep a class. Classes below "
+                        "this are dropped entirely. (default=0.75)")
+    p.add_argument("--no_calibrate", action="store_true",
+                   help="Disable per-class token calibration.")
     return p.parse_args()
 
 
@@ -461,10 +535,10 @@ def main():
         print(f"\n  Strategy: confusion_aware")
         print(f"  Minority ratio:       {args.minority_ratio:.0%}")
         print(f"  Confusion threshold:  {args.confusion_threshold}")
-        print(f"  Target classes:       Upstairs (2), Downstairs (3)")
+        print(f"  Target classes:       Upstairs (2), Sitting (4)")
         print(f"  Confusion pairs:")
-        print(f"    Upstairs   → filter tokens similar to Walking")
-        print(f"    Downstairs → filter tokens similar to Sitting")
+        print(f"    Upstairs → filter tokens similar to Walking")
+        print(f"    Sitting  → filter tokens similar to Downstairs")
 
         # Load gravity from token store for centroid computation
         with h5py.File(args.token_store, "r") as f:
@@ -474,8 +548,8 @@ def main():
         # Only Upstairs (2) and Downstairs (3) get synthetic tokens
         # Scaled by difficulty (inverse F1)
         per_class_f1 = {
-            2: 0.600,   # Upstairs   — hardest minority
-            3: 0.686,   # Downstairs — second hardest
+            2: 0.600,   # Upstairs — hardest minority
+            4: 0.788,   # Sitting  — confused with Downstairs
         }
 
         gen_counts = {}
@@ -497,7 +571,7 @@ def main():
         print(f"\n  Generating raw synthetic tokens ...")
         raw_syn_tokens, raw_syn_labels = [], []
 
-        for cls_id in [2, 3]:   # Upstairs, Downstairs only
+        for cls_id in [2, 4]:   # Upstairs, Sitting only
             n = gen_counts[cls_id]
             if n == 0: continue
             print(f"\n  [{ACTIVITY_NAMES[cls_id]}] generating {n} sequences ...")
@@ -522,7 +596,7 @@ def main():
         print(f"\n  Applying confusion-aware filter ...")
         confusion_pairs = {
             2: 0,   # Upstairs → filter vs Walking
-            3: 4,   # Downstairs → filter vs Sitting
+            4: 3,   # Sitting  → filter vs Downstairs
         }
 
         syn_tokens, syn_labels, syn_gravity = filter_confused_synthetic(
@@ -536,15 +610,40 @@ def main():
             threshold     = args.confusion_threshold,
         )
 
-        # Step 5 — Standard quality check on filtered tokens
+        # Step 4b — Quality gate
         if len(syn_tokens) > 0:
-            quality_check(real_tokens, real_labels, syn_tokens, syn_labels)
+            syn_tokens, syn_labels = apply_quality_gate(
+                syn_tokens  = syn_tokens,
+                syn_labels  = syn_labels,
+                real_tokens = real_tokens,
+                real_labels = real_labels,
+                min_quality = args.min_quality,
+            )
+            # Recompute syn_gravity to match filtered labels
+            if len(syn_labels) > 0:
+                syn_gravity = np.stack([
+                    real_gravity[real_labels == lbl].mean(axis=0)
+                    for lbl in syn_labels
+                ])
+            else:
+                syn_gravity = np.empty(
+                    (0, real_gravity.shape[1]), dtype=np.float32)
 
-        # Step 6 — Save
+        # Step 5 — Quality check on surviving tokens
+        if len(syn_tokens) > 0:
+            quality_check(real_tokens, real_labels,
+                          syn_tokens, syn_labels)
+        else:
+            print("\n  ⚠ No tokens survived quality gate.")
+            print("  Try: lower --confusion_threshold or "
+                  "lower --min_quality")
+            return
+
+        # Step 6 — Calibration & Save
+        if not args.no_calibrate:
+            syn_tokens = calibrate_tokens(real_tokens, real_labels, syn_tokens, syn_labels)
         all_syn_tokens = [syn_tokens]
         all_syn_labels = [syn_labels]
-        # Calibration (optional, keep it consistent with other strategies)
-        # syn_tokens = calibrate_tokens(real_tokens, real_labels, syn_tokens, syn_labels)
 
     else:
         gen_counts = compute_generation_counts(real_labels, args.strategy, args.syn_ratio)
@@ -573,7 +672,8 @@ def main():
         syn_gravity = None 
 
         # ── Token Calibration ─────────────────────────────────────────────────────
-        syn_tokens = calibrate_tokens(real_tokens, real_labels, syn_tokens, syn_labels)
+        if not args.no_calibrate:
+            syn_tokens = calibrate_tokens(real_tokens, real_labels, syn_tokens, syn_labels)
         
         # ── Quality check ─────────────────────────────────────────────────────────
         quality_check(real_tokens, real_labels, syn_tokens, syn_labels)

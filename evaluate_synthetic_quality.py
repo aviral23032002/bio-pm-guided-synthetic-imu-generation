@@ -66,6 +66,10 @@ def main():
         x_syn = f_syn['mean_tokens'][:]
         y_syn = f_syn['labels'][:]
 
+        # 1.1 Load Raw Tokens (N, 192, 64) for raw token-level analysis
+        raw_real = f_real['tokens'][:]
+        raw_syn  = f_syn['tokens'][:]
+
     # 2. Filter / Sample for visualization
     # To keep the plots clean, we sample up to args.sample_size windows
     idx_real = np.random.choice(len(x_real), min(len(x_real), args.sample_size), replace=False)
@@ -116,13 +120,56 @@ def main():
             "CAR-IMU: Clustering by Activity (UMAP)",
             os.path.join(args.out_dir, "activity_umap.png")
         )
-    else:
-        print("\n[Skip] UMAP (umap-learn not installed)")
 
-    # 5. Statistical Metrics
-    print("\n" + "-"*40)
-    print(f"{'Activity':<15} {'MMD (↓)':>10} {'Cos Sim (↑)':>12}")
-    print("-"*40)
+    # 4.5 RAW TOKEN LEVEL ANALYSIS (sampling individual 64d tokens)
+    print("\n" + "="*60)
+    print("RAW TOKEN LEVEL ANALYSIS (Sampling individual 64d tokens)")
+    print("="*60)
+    
+    # Sample 2000 tokens total (randomly across sequences and steps)
+    n_raw_samples = 2000
+    
+    def sample_raw(raw_data, labels, n):
+        N, L, D = raw_data.shape
+        flat = raw_data.reshape(-1, D)
+        # Repeat labels for each step
+        flat_labels = np.repeat(labels, L)
+        idx = np.random.choice(len(flat), min(len(flat), n), replace=False)
+        return flat[idx], flat_labels[idx]
+
+    raw_real_sub, raw_real_lbls = sample_raw(raw_real, y_real, n_raw_samples // 2)
+    raw_syn_sub, raw_syn_lbls = sample_raw(raw_syn, y_syn, n_raw_samples // 2)
+    
+    raw_combined = np.vstack([raw_real_sub, raw_syn_sub])
+    raw_combined_labels = np.concatenate([raw_real_lbls, raw_syn_lbls])
+    
+    print(f"Running raw token t-SNE on {len(raw_combined)} individual tokens...")
+    tsne_raw = TSNE(n_components=2, perplexity=30, random_state=42)
+    emb_tsne_raw = tsne_raw.fit_transform(raw_combined)
+    
+    plot_comparison(
+        emb_tsne_raw[:len(raw_real_sub)], 
+        emb_tsne_raw[len(raw_real_sub):], 
+        None, 
+        "CAR-IMU: Raw Token Comparison (t-SNE)",
+        os.path.join(args.out_dir, "raw_token_tsne.png")
+    )
+    
+    if HAS_UMAP:
+        print(f"Running raw token UMAP on {len(raw_combined)} individual tokens...")
+        reducer_raw = umap.UMAP(n_neighbors=15, min_dist=0.1, random_state=42)
+        emb_umap_raw = reducer_raw.fit_transform(raw_combined)
+        plot_comparison(
+            emb_umap_raw[:len(raw_real_sub)], 
+            emb_umap_raw[len(raw_real_sub):], 
+            None, 
+            "CAR-IMU: Raw Token Comparison (UMAP)",
+            os.path.join(args.out_dir, "raw_token_umap.png")
+        )
+
+    print("\n" + "-"*55)
+    print(f"{'Activity':<15} {'MMD (↓)':>10} {'Cos Sim (↑)':>12} {'L2 Dist (↓)':>12}")
+    print("-"*55)
 
     unique_classes = np.unique(y_real).astype(int)
     for cls_id in unique_classes:
@@ -138,12 +185,17 @@ def main():
         # MMD (using a subset for speed if needed, but 64-d is fast)
         mmd_val = compute_mmd(real_cls[:500], syn_cls[:500])
         
-        # Centroid Cosine Similarity
+        # Centroid stats
         c_real = real_cls.mean(axis=0)
         c_syn = syn_cls.mean(axis=0)
+        
+        # Cosine Similarity
         cos_sim = np.dot(c_real, c_syn) / (np.linalg.norm(c_real) * np.linalg.norm(c_syn) + 1e-8)
         
-        print(f"{cls_id:<15} {mmd_val:>10.4f} {cos_sim:>12.4f}")
+        # L2 Distance
+        l2_dist = np.linalg.norm(c_real - c_syn)
+        
+        print(f"{cls_id:<15} {mmd_val:>10.4f} {cos_sim:>12.4f} {l2_dist:>12.4f}")
 
     # 6. TSTR Evaluation (Train on Synthetic, Test on Real)
     print("\n" + "="*60)
